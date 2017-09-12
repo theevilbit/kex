@@ -106,7 +106,7 @@ def find_object_size(handle,name):
 		dbgCommand(".process " + process)
 	
 		#find object "address"
-		object_ref = dbgCommand("!handle " + h)
+		object_ref = dbgCommand("!handle " + handle)
 		object_tuples = re.findall( r'(Object: )([0-9a-f]*)(  GrantedAccess)', object_ref)
 		if object_tuples:
 			obj = object_tuples[0][1]
