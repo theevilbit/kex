@@ -106,7 +106,7 @@ def find_object_size(handle,name):
 		dbgCommand(".process " + process)
 	
 		#find object "address"
-		object_ref = dbgCommand("!handle " + handle)
+		object_ref = dbgCommand("!handle " + hex(handle))
 		object_tuples = re.findall( r'(Object: )([0-9a-f]*)(  GrantedAccess)', object_ref)
 		if object_tuples:
 			obj = object_tuples[0][1]
@@ -120,6 +120,17 @@ def find_object_size(handle,name):
 			size_re = re.findall(r'(\*[0-9a-f]{8} size:[ ]*)([0-9a-f]*)( previous)',pools)
 			if size_re:
 				print name + " objects's size in kernel: 0x" + size_re[0][1]
+				if 'Named' in name:
+					print "Dumping first 0x40 bytes of the pool chunk: "
+					for i in range(0x40/4):
+						print hex(ptrDWord(int(obj,16)-0x40+4*i))[2:].zfill(8)
+					print dbgCommand("dd " + obj + "-40 L40/4")
+				else:
+					print "Dumping first 0x30 bytes of the pool chunk: "
+					for i in range(0x30/4):
+						print hex(ptrDWord(int(obj,16)-0x30+4*i))[2:].zfill(8)
+					print dbgCommand("dd " + obj + "-30 L30/4")
+				
 
 	#close handle
 	kernel32.CloseHandle(handle)
