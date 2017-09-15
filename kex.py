@@ -424,7 +424,7 @@ def restoretokenx86(RETVAL, extra = ""):
 	
 	return shellcode
 
-#https://www.exploit-db.com/exploits/18176/
+#https://www.exploit-db.com/exploits/18176/ 
 def tokenstealingx86(RETVAL, extra = ""):
 	"""
 	Retrun a token stealing shellcode related to the platform

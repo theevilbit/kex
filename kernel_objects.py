@@ -132,7 +132,7 @@ def find_object_size(handle,name):
 					print dbgCommand("dd " + obj + "-30 L30/4")
 				
 
-	#close handle
+	#close handle 
 	kernel32.CloseHandle(handle)
 
 #attach to local kernel debugging
