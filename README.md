@@ -101,7 +101,3 @@ There a few other functions as well.
 ## Advanced usage
 
 For now: Study the example codes and the function comments in the kex.py code. Almost all function has a description about what it does, and the input / output variables.
-
-
-## 
-#kernel
