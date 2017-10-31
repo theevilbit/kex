@@ -3,7 +3,7 @@
 None, it only uses default Python system libraries, and this won’t change in the future, I want to keep it package independent. It works with Python 2.7.x, and wasn’t tested with 3.x.
 
 ## Sources
-If I used a function I found somewhere, I tried to point this out in the comments. Specifically the GDI abuse ones are taken from: [GitHub - GradiusX/HEVD-Python-Solutions: Python solutions for the HackSysTeam Extreme Vulnerable Driver](https://github.com/GradiusX/HEVD-Python-Solutions). Although I modified them them in some cases, still the majority is unchanged, and as they build up big part of the code base, I wanted to highlight it here.
+If I used a function I found somewhere, I tried to point this out in the comments. Specifically the GDI bitmap abuse ones are taken from: [GitHub - GradiusX/HEVD-Python-Solutions: Python solutions for the HackSysTeam Extreme Vulnerable Driver](https://github.com/GradiusX/HEVD-Python-Solutions). Although I modified them them in some cases, still the majority is unchanged, and as they build up big part of the code base, I wanted to highlight it here.
 
 ## Basic usage
 ### Functions to generate token stealing shell code:
@@ -37,23 +37,34 @@ def pool_overwrite(required_hole_size,good_object):
 
 See the CVE-2017-14153_windrvr1240-50_win7x86.py example for details. Basically if you know the hole size that will be overflown, these can mask the pool spraying process (no need to care about objects, allocation, overwrite data, etc…). Currently only works on Windows 7x86 SP1
 
-### Functions to use for GDI object abuse:
+### Functions to use for GDI object abuse (BITMAP and PALETTE):
 
-These functions for working with the bitmaps, creation, read/write primitives.
+These functions for working with the bitmaps, creation, read/write primitives:
 
 ```
 def create_bitmap(width, height, cBitsPerPel):
 def create_bitmaps(width, height, cBitsPerPel):
-def set_address(manager_bitmap, address):
-def write_memory(manager_bitmap, worker_bitmap, dst, src, len):
-def read_memory(manager_bitmap, worker_bitmap, src, dst, len):
+def set_address_bitmap(manager_bitmap, address):
+def write_memory_bitmap(manager_bitmap, worker_bitmap, dst, src, len):
+def read_memory_bitmap(manager_bitmap, worker_bitmap, src, dst, len):
 ```
 
-These to perform token stealing with the help of bitmaps:
+The same set of functions to work with palettes:
 
 ```
-def get_current_eprocess(manager_bitmap, worker_bitmap, pointer_EPROCESS):
+def create_palette_with_size(s):
+def set_address_palette(manager_platte_handle, address):
+def write_memory_palette(manager_platte_handle, worker_platte_handle, dst, src, len):
+def read_memory_palette(manager_platte_handle, worker_platte_handle, src, dst, len):
+```
+
+These to perform token stealing with the help of bitmaps / palettes:
+
+```
+def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS):
+def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCESS)
 def tokenstealing_with_bitmaps(manager_bitmap, worker_bitmap):
+def tokenstealing_with_palettes(manager_palette, worker_palette):
 ```
 
 This set is leaking bitmap handle kernel pointers using GDISharedHandleTable, works up to Win10x64 v1511:
@@ -70,7 +81,7 @@ def get_accel_kernel_address(handle):
 def alloc_free_accelerator_tables():
 ```
 
-This set is leaking bitmap handle kernel pointers using windows, works up to Win10x64 v1703:
+This set is leaking bitmap / palette kernel pointers using windows, works up to Win10x64 v1709 (in case of bitmaps only till v1703):
 
 ```
 def findHMValidateHandle():
@@ -79,21 +90,23 @@ def allocate_free_window(classNumber, pHMValidateHandle):
 def alloc_free_windows(classNugetosvariablesx86mber):
 ```
 
-The following three groups the previous ones together and can be used as a single call:
+The following four groups the previous ones together and can be used as a single call:
 
 ```
 def gdi_abuse_gdisharedhandletable_technique():
 def gdi_abuse_accelerator_tables_technique():
-def gdi_abuse_tagwnd_technique():
+def gdi_abuse_tagwnd_technique_bitmap():
+def gdi_abuse_tagwnd_technique_palette():
 ```
 
-Lastly, this wraps the previous ones, and can give a WHAT / WHERE address for WWW vulnerabilities up to Win10x64 v1703:
+Lastly, these wrap the previous ones, and can give a WHAT / WHERE address for WWW vulnerabilities up to Win10x64 v1709 (bitmaps only up to v1703):
 
 ```
 def get_www_address_and_bitmaps():
+def get_www_address_and_palettes():
 ```
 
-The hacksys_arbitrary_overwrite-universal-win7-10x64.py can be check for how to use these.
+The hacksys_arbitrary_overwrite-universal-win7-10x64.py can be checked for how to use these.
 
 ### Others
 There a few other functions as well. 
