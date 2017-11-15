@@ -99,7 +99,7 @@ def gdi_abuse_tagwnd_technique_bitmap():
 def gdi_abuse_tagwnd_technique_palette():
 ```
 
-Lastly, these wrap the previous ones, and can give a WHAT / WHERE address for WWW vulnerabilities up to Win10x64 v1709 (bitmaps only up to v1703):
+These wrap the previous ones, and can give a WHAT / WHERE address for WWW vulnerabilities up to Win10x64 v1709 (bitmaps only up to v1703):
 
 ```
 def get_www_address_and_bitmaps():
@@ -108,7 +108,28 @@ def get_www_address_and_palettes():
 
 The hacksys_arbitrary_overwrite-universal-win7-10x64.py can be checked for how to use these.
 
+### Functions to leak info
+
+These can be used to leak handle, token and process related information:
+
+```
+def get_type_info(handle):
+def get_handles():
+def token_address_of_process(h_process, process_id):
+def getpid(procname):
+def get_psinitialsystemprocess():	
+def get_haldispatchtable():
+def find_driver_base(driver=None):
+```
+
 ### Others
+
+Inject shell code into winlogon.exe:
+
+```
+def inject_shell():
+```
+
 There a few other functions as well. 
 
 ## Advanced usage
