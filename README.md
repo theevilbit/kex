@@ -6,9 +6,9 @@ None, it only uses default Python system libraries, and this won’t change in t
 If I used a function I found somewhere, I tried to point this out in the comments. Specifically the GDI bitmap abuse ones are taken from: [GitHub - GradiusX/HEVD-Python-Solutions: Python solutions for the HackSysTeam Extreme Vulnerable Driver](https://github.com/GradiusX/HEVD-Python-Solutions). Although I modified them them in some cases, still the majority is unchanged, and as they build up big part of the code base, I wanted to highlight it here.
 
 ## Basic usage
-### Functions to generate token stealing shell code:
+### Functions to generate shell codes
 
-These will get specific OS structure offsets, required for token stealing:
+These will get specific OS structure offsets:
 ```
 def getosvariablesx():
 def getosvariablesx86():
@@ -22,7 +22,14 @@ def tokenstealingx64(RETVAL, extra = ""):
 def tokenstealing(RETVAL, extra = ""):
 ```
 
-### Functions to use for pool spraying:
+These will create other shellcodes:
+
+```
+def acl_shellcode_x64(RETVAL, extra = "", name = "winlogon.exe"):
+def privilege_shellcode_x64(RETVAL, extra = ""):
+```
+
+### Functions to use for pool spraying
 
 ```
 def allocate_object(object_to_use, variance):
@@ -37,7 +44,7 @@ def pool_overwrite(required_hole_size,good_object):
 
 See the CVE-2017-14153_windrvr1240-50_win7x86.py example for details. Basically if you know the hole size that will be overflown, these can mask the pool spraying process (no need to care about objects, allocation, overwrite data, etc…). Currently only works on Windows 7x86 SP1
 
-### Functions to use for GDI object abuse (BITMAP and PALETTE):
+### Functions to use for GDI object abuse (BITMAP and PALETTE)
 
 These functions for working with the bitmaps, creation, read/write primitives:
 
@@ -58,13 +65,20 @@ def write_memory_palette(manager_platte_handle, worker_platte_handle, dst, src, 
 def read_memory_palette(manager_platte_handle, worker_platte_handle, src, dst, len):
 ```
 
-These to perform token stealing with the help of bitmaps / palettes:
+These perform data only 'shellcodes' with the help of bitmaps / palettes:
 
 ```
 def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS):
 def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCESS)
 def tokenstealing_with_bitmaps(manager_bitmap, worker_bitmap):
+
+def leak_eprocess_address_palette(manager_palette, worker_palette):
+def get_current_and_system_eprocess_palette(manager_palette, worker_palette):
+def find_eprocess_by_pid_palette(manager_palette, worker_palette, pointer_EPROCESS, search_pid):
+def find_pid_and_eprocess_by_name_palette(manager_palette, worker_palette, pointer_EPROCESS, search_name):
 def tokenstealing_with_palettes(manager_palette, worker_palette):
+def privilege_with_palettes(manager_palette, worker_palette):
+def acl_with_palettes(manager_palette, worker_palette, search_name):
 ```
 
 This set is leaking bitmap handle kernel pointers using GDISharedHandleTable, works up to Win10x64 v1511:
@@ -127,7 +141,7 @@ def find_driver_base(driver=None):
 Inject shell code into winlogon.exe:
 
 ```
-def inject_shell():
+def inject_shell(manager_palette=None, worker_palette=None):
 ```
 
 There a few other functions as well. 
