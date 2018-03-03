@@ -150,6 +150,16 @@ def find_driver_base(driver=None):
 def get_kuser_shared_data():
 ```
 
+### Functions for SMEP bypass
+
+```
+def get_smep_rop1_offsets():
+def get_smep_rop2_offsets():
+def disable_smep_cr4_rop(kernel_base, return_address):
+def enable_smep_cr4_rop(kernel_base, return_address):
+def set_user_pte_kernel_rop(hal_base, va_pte, return_address):
+```
+
 ### Others
 
 Inject shell code into winlogon.exe:
